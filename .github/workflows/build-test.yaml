@@ -18,26 +18,13 @@ jobs:
     runs-on: ubuntu-latest
     # 一个 job 由多个 step 组成
     steps:
-      # 当前 step 的名字
-      - name: Checkout
-        # checkout action 主要用于向 github 仓库拉取源代码
-        # https://github.com/actions/checkout
-        uses: actions/checkout@v3
-        with:
-          ref: main
-        # 安装node.js
-      - name: Use Node.js
-        uses: actions/setup-node@main
-        with:
-          node-version: 16
-          cache: "yarn"
+      - uses: actions/checkout@v2
+      - name: Init environment
+        uses: ./.github/actions/init
       - name: Build
-        # 安装 Node 之后就可以执行构建脚本
         run: |
-          yarn
-          yarn run build
-
-      # 把文件上传到OSS 方便下载
+          pnpm run build
+      # 把文件上传到OSS
       - name: Set up oss utils
         uses: yizhoumo/setup-ossutil@v1
         with:
