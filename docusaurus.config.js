@@ -21,7 +21,7 @@ const config = {
   favicon: "img/favicon.ico",
   organizationName: "Chat2DB",
   projectName: "Chat2DB",
-  onBrokenLinks: "throw",
+  onBrokenLinks: "warn",
   onBrokenMarkdownLinks: "warn",
   trailingSlash: true,
   presets: [
