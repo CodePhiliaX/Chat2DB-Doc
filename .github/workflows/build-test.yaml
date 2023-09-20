@@ -1,0 +1,50 @@
+# 当前工作流的名字  随便取
+name: Build Docusaurus Test
+
+# 指定 workflow 触发的 event
+# 在main分支提交的时候触发
+on:
+  push:
+    branches:
+      - main
+
+# 一个 workflow 由一个或多个 job 组成
+jobs:
+  # job id: 是 job 的唯一标识
+  build_and_deploy:
+    # 在 Github 中显示的 job 名称
+    name: Build and Deploy
+    # job 运行的环境配置
+    runs-on: ubuntu-latest
+    # 一个 job 由多个 step 组成
+    steps:
+      # 当前 step 的名字
+      - name: Checkout
+        # checkout action 主要用于向 github 仓库拉取源代码
+        # https://github.com/actions/checkout
+        uses: actions/checkout@v3
+        with:
+          ref: main
+        # 安装node.js
+      - name: Use Node.js
+        uses: actions/setup-node@main
+        with:
+          node-version: 16
+          cache: "yarn"
+      - name: Build
+        # 安装 Node 之后就可以执行构建脚本
+        run: |
+          yarn
+          yarn run build
+
+      # 把文件上传到OSS 方便下载
+      - name: Set up oss utils
+        uses: yizhoumo/setup-ossutil@v1
+        with:
+          endpoint: "oss-accelerate.aliyuncs.com"
+          access-key-id: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          access-key-secret: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+          ossutil-version: "latest"
+      - name: Upload to oss
+        run: |
+          ossutil cp -rf --acl=public-read ./build/ oss://chat2db-website-test/
