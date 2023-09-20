@@ -55,7 +55,7 @@ const config = {
         title: "Chat2DB",
         logo: {
           alt: "My Site Logo",
-          src: "img/logo.svg",
+          src: "img/logo.png",
         },
         items: [
           { to: "docs", label: "Documentation", position: "right" },
@@ -77,10 +77,15 @@ const config = {
           },
         ],
       },
+      colorMode: {
+        defaultMode: "light", // 默认为白色主题
+        // ... 其他颜色模式配置
+      },
       prism: {
         theme: require("prism-react-renderer/themes/dracula"),
       },
     }),
+  scripts: ["script/languageRedirect.js"],
 };
 
 module.exports = config;
