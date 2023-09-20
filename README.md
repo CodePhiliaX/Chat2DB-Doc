@@ -8,6 +8,12 @@ This website is built using [Docusaurus 2](https://docusaurus.io/), a modern sta
 $ yarn
 ```
 
+### How to use zh
+
+```
+yarn start --locale zh
+```
+
 ### Local Development
 
 ```
