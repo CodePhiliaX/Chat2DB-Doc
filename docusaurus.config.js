@@ -53,11 +53,12 @@ const config = {
       navbar: {
         title: "Chat2DB",
         logo: {
-          alt: "My Site Logo",
+          alt: "Chat2DB Logo",
           src: "img/logo.png",
+          href: "https://chat2db.ai/",
         },
         items: [
-          { to: "/", label: "Documentation", position: "right" },
+          { to: "/", label: "Documentation" },
           // {
           //   type: "doc",
           //   docId: "contact",

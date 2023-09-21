@@ -6,7 +6,7 @@ const sidebars = {
     "index",
     {
       type: "category",
-      label: "Guide",
+      label: "Getting Started",
       // 默认打开
       collapsed: false,
       items: ["guides/user-guide"],

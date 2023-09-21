@@ -1,5 +1,5 @@
 ---
-title: 'Chat2DB Intro'
+title: 'Intro'
 sidebar_position: 1
 description: Chat2DB is a database client tool that integrates AI capabilities and supports Mysql, Oracle and other database management
 ---
