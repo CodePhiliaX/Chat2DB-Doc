@@ -59,6 +59,8 @@ const config = {
         },
         items: [
           { to: "/", label: "Documentation" },
+          { to: "/contact", label: "Contact", type: "doc", docId: "contact" },
+          { to: "/changelog", label: "Changelog", type: "doc", docId: "changelog" },
           // {
           //   type: "doc",
           //   docId: "contact",
