@@ -9,13 +9,14 @@ description: Chat2DB一个集成了AI能力的、支持Mysql、Oracle等多种�
 ## 10分钟入门视频
 
 <iframe src="//player.bilibili.com/player.html?aid=659372917&bvid=BV1yh4y1r7NF&cid=1223366275&page=1&autoplay=0" width="100%" height="500" scrolling="no" border="0" frameborder="no" framespacing="0" allowfullscreen="true"  sandbox="allow-top-navigation allow-same-origin allow-forms allow-scripts"> </iframe>
+
 ## 访问示例数据
 
 打开Chat2DB，点击左侧的“连接”按钮，选择“示例数据库”，右键点击“连接”按钮或双击，即可连接到示例数据库。
 
 ⚠ 提示：访问示例数据需要可以连接公网，如果无法连接公网，忽略报错，删除示例数据直接连接自己内部数据库即可。
 
-<a><img src="https://sqlgpt.cn/img/2.png" width="100%"/></a>
+![userGuide-1](../img/website-userguide-1.png)
 
 如图所示，Chat2DB已经连接到示例数据库，可以直接使用。
 2、3代表数据库schema点击可以切换database。
@@ -24,24 +25,23 @@ description: Chat2DB一个集成了AI能力的、支持Mysql、Oracle等多种�
 
 6、代表SQL控制台，新建可以打开新的控制台，在控制台可以对该数据库做操作。
 
-<a><img src="https://sqlgpt.cn/img/4.png" width="100%"/></a>
+![userGuide-2](../img/website-userguide-2.png)
 
 点击左侧仪表盘按钮，可以查看示例报表功能
 
-<a><img src="https://sqlgpt.cn/img/6.png" width="100%"/></a>
+![userGuide-3](../img/website-userguide-3.png)
 
 ## 新建数据库连接
 
 点击左侧“连接”按钮，点击右侧“新建链接”按钮，选择数据库类型，输入数据库连接信息，点击“连接”按钮即可连接数据库。
 
-<a><img src="https://sqlgpt.cn/img/7.png" width="20%"/></a>
-<a><img src="https://sqlgpt.cn/img/8.png" width="75%"/></a>
+![userGuide-4](../img/website-userguide-4.png)
 
 ### 配置数据库信息
 
 配置数据库连接信息，点击“测试连接”按钮，如果连接成功，点击“连接”按钮即可连接数据库。
 
-<a><img src="https://sqlgpt.cn/img/9.png" width="100%"/></a>
+![userGuide-5](../img/website-userguide-5.png)
 
 ### 驱动配置
 
@@ -51,14 +51,15 @@ description: Chat2DB一个集成了AI能力的、支持Mysql、Oracle等多种�
 
 2、如果无法连接公网或者默认驱动不能适配你的数据库，可以在本地下载驱动，点击“上传驱动”按钮，选择驱动文件上传，上传成功后即可使用。
 
-<a><img src="https://sqlgpt.cn/img/10.png" width="55%"/></a>
-<a><img src="https://sqlgpt.cn/img/11.png" width="35%"/></a>
+![userGuide-6](../img/website-userguide-6.png)
+![userGuide-7](../img/website-userguide-7.png)
+![userGuide-8](../img/website-userguide-8.png)
 
 ### 配置SSH隧道
 
 如果数据库需要通过SSH隧道连接，可以选择使用SSH true 配置SSH隧道信息，点击“测试SSH隧道”按钮，如果连接成功，说明SSH可以链接。
 
-<a><img src="https://sqlgpt.cn/img/12.png" width="100%"/></a>
+![userGuide-9](../img/website-userguide-9.png)
 
 ### ⚠ 错误提示
 
@@ -66,7 +67,7 @@ description: Chat2DB一个集成了AI能力的、支持Mysql、Oracle等多种�
 
 如果仍然无法解决，查看详情后可以复制错误信息，在 GitHub 提交 issue，所有 issue 我们都会去看，提交 issue 是最有效的解决办法。
 
-<a><img src="https://sqlgpt.cn/img/13.png" width="100%"/></a>
+![userGuide-10](../img/website-userguide-10.png)
 
 ## 数据库管理
 
@@ -78,12 +79,13 @@ description: Chat2DB一个集成了AI能力的、支持Mysql、Oracle等多种�
 
 6、代表SQL控制台，新建可以打开新的控制台，在控制台可以对该数据库做操作。
 
-<a><img src="https://sqlgpt.cn/img/4.png" width="100%"/></a>
-<a><img src="https://sqlgpt.cn/img/14.png" width="100%"/></a>
+![website-mutli-database](../img/website-mutli-database.png)
 
 1、选中SQL，点击执行按钮，可以执行SQL。控制台下方会显示执行结果，可以分页查看结果，也可以导出结果。
 2、选中SQL，点击格式化按钮，可以格式化SQL。
 3、点击控制台保存按钮，可以保存SQL到本地，在左侧我的保存可以查看保存记录，下次打开可以直接打开。
+
+![userGuide-11](../img/website-userguide-11.png)
 
 ## AI 配置
 
@@ -98,12 +100,12 @@ description: Chat2DB一个集成了AI能力的、支持Mysql、Oracle等多种�
 
 Open AI官方限制文档：https://platform.openai.com/docs/guides/rate-limits/overview
 
-<a><img src="https://sqlgpt.cn/img/15.png" width="80%"/></a>
+![userGuide-12](../img/website-userguide-12.png)
 
 如果以上问题你都已经解决，可以参考下面配置就可以使用 OpenAI了。
 
 
-<a><img src="https://sqlgpt.cn/img/16.png" width="100%"/></a>
+![userGuide-13](../img/website-userguide-13.png)
 
 点击左下角设置--》自定义AI-->OpenAI，输入Open AI Key，点击保存即可。Api Host 一般不需要修改，如果你有私有部署的 OpenAI 代理，可以修改 Api Host。HTTP Proxy Host、HTTP Proxy Port 一般不需要填，如果你的网络需要代理才能访问 OpenAI，可以配置代理。
 
@@ -112,11 +114,11 @@ Open AI官方限制文档：https://platform.openai.com/docs/guides/rate-limits/
 
 Chat2DB AI 是 Chat2DB 自己实现的 AI，不需要科学上网。 通过扫描下方二维码，关注 Chat2DB 公众号，回复“AI”获取AI Key，然后在 Chat2DB 中配置 AI Key即可使用。
 
-<a><img src="https://sqlgpt.cn/img/qrcode_for_gh_ad223b39df20_258.jpg" width="30%"/></a>
+![userGuide-14](../img/website-userguide-14.png)
 
 点击左下角设置--》自定义AI--> Chat2DB AI，输入AI Key，点击保存即可。
 
-<a><img src="https://sqlgpt.cn/img/17.png" width="100%"/></a>
+![userGuide-15](../img/website-userguide-15.png)
 
 ### 其他方式：也支持 AzureAI 或自定义 AI 
 
@@ -127,13 +129,14 @@ Chat2DB AI 是 Chat2DB 自己实现的 AI，不需要科学上网。 通过扫�
 ### 1、AI 生成SQL
 
 在数据库管理中，选中数据库，新建SQL控制台，在控制台上方有一个输入框，输入你需要让AI帮你查询的数据回车，AI 会自动的在控制台生成你想要的SQL，点击执行按钮就可执行 SQL 控制台下方会显示你查询的结果。
-<a><img src="https://sqlgpt.cn/img/18.png" width="100%"/></a>
+
+![userGuide-18](../img/website-userguide-18.png)
 
 
 ### 2、SQL 解释
 
 选中 SQL 右键 解释SQL，在右侧弹窗中 AI 即可对 SQL 解释生成内容。
-<a><img src="https://sqlgpt.cn/img/21.png" width="100%"/></a>
+![userGuide-19](../img/website-userguide-19.png)
 
 
 ### 3、SQL优化
@@ -148,7 +151,7 @@ Chat2DB AI 是 Chat2DB 自己实现的 AI，不需要科学上网。 通过扫�
 ## BI 报表
 
 点击左侧第二个“仪表盘”按钮，可以查看已经创建的报表，单击切换即可看到相应的报表数据 。
-<a><img src="https://sqlgpt.cn/img/19.png" width="100%"/></a>
+![userGuide-20](../img/website-userguide-20.png)
 
 
 点击"+"按钮可以新建报表，输入报表名称，点击保存，选中刚新建的仪表盘开始添加数据。

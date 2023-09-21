@@ -36,10 +36,9 @@ const config = {
         docs: {
           sidebarPath: require.resolve("./sidebars.js"),
           breadcrumbs: false,
+          routeBasePath: "/",
         },
-        blog: {
-          showReadingTime: true,
-        },
+        blog: false,
         theme: {
           customCss: require.resolve("./src/css/custom.css"),
         },
@@ -50,7 +49,7 @@ const config = {
   themeConfig:
     /** @type {import('@docusaurus/preset-classic').ThemeConfig} */
     ({
-      image: "img/docusaurus-social-card.jpg",
+      image: "img/logo.png",
       navbar: {
         title: "Chat2DB",
         logo: {
@@ -58,7 +57,7 @@ const config = {
           src: "img/logo.png",
         },
         items: [
-          { to: "docs", label: "Documentation", position: "right" },
+          { to: "/", label: "Documentation", position: "right" },
           // {
           //   type: "doc",
           //   docId: "contact",
