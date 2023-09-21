@@ -32,7 +32,8 @@ description: Chat2DB一个集成了AI能力的、支持Mysql、Oracle等多种�
 * 更多数据库支持中...
 
 ## ☎️ 联系我们
-![WeChat](./img/wechat.png)
+
+![WeChat](https://chat2db-stastic.oss-cn-beijing.aliyuncs.com/img/yuxiao_wechat.webp)
 
 微信：yxccw132 
 
