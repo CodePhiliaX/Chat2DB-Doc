@@ -87,7 +87,7 @@ const config = {
         theme: require("prism-react-renderer/themes/dracula"),
       },
     }),
-  scripts: ["script/languageRedirect.js"],
+  scripts: ["./script/languageRedirect.js"],
 };
 
 module.exports = config;
