@@ -12,6 +12,7 @@ const config = {
       },
     },
   },
+  
 
   title: "Chat2DB",
   tagline:
