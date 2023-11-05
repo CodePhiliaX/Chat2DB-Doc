@@ -3,6 +3,117 @@ title: "Changelog"
 sidebar_position: 1
 ---
 
+## 3.0.10
+
+`2023-11-05`
+
+**Changelog**
+- ⭐【New Features】 Edit data support right click operation 
+  - Supports single-row replication of Insert, Update, table header fields, and row data 
+  - Clone the selected row 
+  - Replication of cell data is supported 
+  - You can set the cell to Null or Default 
+  - Row deletion is supported
+  - Supports zooming in to view or modify data
+- ⭐【New Features】Supports the ctrl/cmd+c shortcut to copy row data or cell data
+- ⭐【New Features】Supports the shortcut key ctrl/cmd+v to paste and copy row data/cell data to row/cell
+- ⭐【New Features】Edit table structure supports setting primary keys in columns
+- ⭐【New Features】History is added to the foldable panel on the right
+- ⭐【New Features】Edit data to support cell-level undo changes
+- ⭐【New Features】The Table tree node operation menu on the left supports copying table, field, key, index, and function names
+- ⭐【New Features】The node in the left Table tree supports ctrl/cmd+c to copy the node text
+- ⭐【New Features】You can right-click to close tabs, close other tabs, or close all tabs
+- ⚡️【Optimize】Edit the table structure to add loading
+- ⚡️【Optimize】The tree node operation menu supports right-clicking
+- 🐞【Fixed】Fixed table structure editing floating-point decimal Settings display exception
+
+**更新日志**
+- ⭐【新功能】编辑数据支持右键操作
+  - 支持单行复制 Insert、Update、表头字段、行数据
+  - 支持克隆选中行
+  - 支持复制单元格数据
+  - 支持设置单元格为Null和Default
+  - 支持删除行
+  - 支持放大查看或修改数据
+- ⭐【新功能】支持快捷键ctrl/cmd+c 复制行数据/单元格数据
+- ⭐【新功能】支持快捷键ctrl/cmd+v 粘贴复制行数据/单元格数据到行/单元格
+- ⭐【新功能】编辑表结构支持在列中设置主键
+- ⭐【新功能】编辑数据支持单元格级别撤销修改
+- ⭐【新功能】左侧Table树节点操作菜单支持复制表、字段、key、index、函数等名称
+- ⭐【新功能】左侧Table树节点支持ctrl/cmd+c 复制节点文本
+- ⭐【新功能】右侧可折叠面板中增加历史记录
+- ⭐【新功能】支持右键关闭tab/关闭其他tab/关闭所有tab
+- ⚡️【优化】编辑表结构添加loading
+- ⚡️【优化】树节点操作菜单支持右键唤出
+- 🐞【修复】修复表结构编辑浮点数小数位设置显示异常
+
+
+## 3.0.9
+
+`2023-11-01`
+
+**Changelog**
+- ⭐【New Features】Query results can be refreshed
+- ⚡️【Optimize】Console Tabs adaptive width
+- 🐞【Fixed】console save bug
+- 🐞【Fixed】sqlite can only retrieve one piece of data
+
+**更新日志**
+- ⭐【新功能】查询结果支持刷新
+- ⚡️【优化】控制台Tabs自适应宽度
+- 🐞【修复】console保存bug
+- 🐞【修复】sqlite只能查到一条数据问题
+
+## 3.0.5
+
+`2023-10-23`
+
+**Changelog**
+- ⭐【New Features】Supports visual database creation
+- ⭐【New Features】Support hot update
+- ⭐【New Features】Double-click the table to open it directly
+- ⚡️【Optimize】The search table supports size fuzzy matching
+- ⚡️【Optimize】Sort Database and Schema at the top
+- ⚡️【Optimize】The queried data supports editing and modification in the large popup window of the view
+- ⚡️【Optimize】Example Query the page loading effect of data
+- ⚡️【Optimize】Keep the top focused tab always in the viewable area
+- ⚡️【Optimize】Query data cell does not have scroll bar problem
+
+**更新日志**
+- ⭐【新功能】支持可视化创建数据库
+- ⭐【新功能】支持热更新
+- ⭐【新功能】双击表直接打开表
+- ⚡️【优化】搜索表支持大小模糊匹配
+- ⚡️【优化】Database 和 Schema 排序
+- ⚡️【优化】查询的数据支持在查看的大的弹窗中编辑修改
+- ⚡️【优化】查询数据翻页loading效果
+- ⚡️【优化】保持顶部聚焦的tab永远在可视区域内
+- ⚡️【优化】查询数据单元格没有滚动条问题
+
+
+## 3.0.4
+
+`2023-10-20`
+
+**Changelog**
+- 🐞【Fixed】Bugs are displayed when more than 100 data items are queried
+
+**更新日志**
+- 🐞【修复】查询数据超过100条时显示bug
+
+## 3.0.1
+
+`2023-10-19`
+
+**Changelog**
+- ⚡️【Optimize】Search result scroll bar
+- ⚡️【Fixed】Oracle update result data bug
+
+**更新日志**
+- ⚡️【优化】查询结果滚动条
+- 🐞【修复】Oracle更新结果数据错误
+
+
 ## 3.0.0
 
 `2023-10-17`
