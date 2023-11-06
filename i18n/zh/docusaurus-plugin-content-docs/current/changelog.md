@@ -3,7 +3,7 @@ title: "Changelog"
 sidebar_position: 1
 ---
 
-## 3.0.11
+## 3.0.10
 
 `2023-11-06`
 
