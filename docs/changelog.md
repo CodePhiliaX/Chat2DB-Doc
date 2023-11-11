@@ -3,6 +3,20 @@ title: "Changelog"
 sidebar_position: 1
 ---
 
+## 3.0.11
+
+`2023-11-08`
+
+**Changelog**
+
+- ⭐【New Features】Oracle connections support the Service name mode
+- ⭐【New Features】[New function] Edit table data to support batch copy, clone, delete (click 1X1 cell to select/cancel, hold down shift/ctrl/cmd to select multiple)
+- ⚡️【Optimize】After the update is completed, click restart to close the problem that cannot be automatically opened (hot update cannot fix this problem, you need to download a new version to cover the client)
+- 🐞【Fixed】database and schema searches support case ambiguity matching
+- 🐞【Fixed】Where database was not displayed after being added
+- 🐞【Fixed】sql formatting to ·now()· format error
+
+
 ## 3.0.10
 
 `2023-11-06`
@@ -94,7 +108,7 @@ sidebar_position: 1
 
 ## 2.1.0
 
-## ⭐ New Features
+### ⭐ New Features
 
 - 🔥The team function is newly launched, supporting team collaboration. R&D does not require knowing the online database
   password, solving the security issue of enterprise database accounts. It is recommended to directly deploy the team
@@ -103,16 +117,16 @@ sidebar_position: 1
 
 ## 2.0.14
 
-## 🐞 Bug Fixes
+### 🐞 Bug Fixes
 
 - Fix the issue of 'Oracle' query 'Blob' reporting errors
 - Modify the paging logic and fix some SQL queries that cannot be queried
 
 ## 2.0.13
 
-## ⭐ New Features
+### ⭐ New Features
 
-## 🐞 Bug Fixes
+### 🐞 Bug Fixes
 
 - Fixed a bug where sql formatting was not selected
 - Fixed open view lag issue
@@ -120,13 +134,13 @@ sidebar_position: 1
 
 ## 2.0.12
 
-## ⭐ New Features
+### ⭐ New Features
 
 - 🔥Supports viewing views, functions, triggers, and procedures
 - Support selected sql formatting
 - Added new dark themes
 
-## 🐞 Bug Fixes
+### 🐞 Bug Fixes
 
 - Fixed sql formatting failure issue
 - Fixed an issue where locally stored theme colors and background colors are incompatible with the new version, causing
@@ -140,7 +154,7 @@ sidebar_position: 1
 
 ## 2.0.11
 
-## 🐞 Bug Fixes
+### 🐞 Bug Fixes
 
 - Fix the issue where SSH does not support older versions of encryption algorithms
 - Fix the issue of SQL Server 2008 not being able to connect
@@ -148,7 +162,7 @@ sidebar_position: 1
 
 ## 2.0.10
 
-## 🐞 Bug Fixes
+### 🐞 Bug Fixes
 
 - Activate the console for the latest operation when you create or start a console、Records the last console used
 - The replication function of the browser, such as edge, is unavailable
@@ -157,13 +171,13 @@ sidebar_position: 1
 
 ## 2.0.9
 
-## 🐞 Bug Fixes
+### 🐞 Bug Fixes
 
 -Fix the issue of Windows flash back
 
 ## 2.0.8
 
-## 🐞 Bug Fixes
+### 🐞 Bug Fixes
 
 - Repair the Scientific notation in some databases [Issue #378](https://github.com/chat2db/Chat2DB/issues/378)
 - Fix some cases where data is not displayed
@@ -175,56 +189,56 @@ sidebar_position: 1
 
 ## 2.0.7
 
-## ⭐ New Features
+### ⭐ New Features
 
 - Export query result as file is supported
 
-## 🐞 Bug Fixes
+### 🐞 Bug Fixes
 
 - Fixed ai config issues [Issue #346](https://github.com/chat2db/Chat2DB/issues/346)
 
 ## 2.0.6
 
-## 🐞 Bug Fixes
+### 🐞 Bug Fixes
 
 - Fixed: When there are too many tables under the selected library, the "New Console" button at the bottom
   disappears [Issue #314](https://github.com/chat2db/Chat2DB/issues/314)
 
 ## 2.0.5
 
-## ⭐ New Features
+### ⭐ New Features
 
 - Supports 25 free uses of AIGC every day.
 - Support for querying data pagination.
 - Support switching between multiple databases in PostgreSQL.
 - Support for hot updating of client-side code allows for rapid bug fixes.
 
-## 🐞 Bug Fixes
+### 🐞 Bug Fixes
 
 - Default return alias for returned results [Issue #270](https://github.com/chat2db/Chat2DB/issues/270)
 - Fixed around 100 bugs, of course, many were repetitive bugs.
 
 ## 2.0.4
 
-## ⭐ New Features
+### ⭐ New Features
 
 - Support DB2 database
 - Support renaming after console saving
 - Support prompts during SQL execution
 
-## 🐞 Bug Fixes
+### 🐞 Bug Fixes
 
 - Fix the bug that the database in sqlserver is all numbers
 - Fix ssh connection bug
 
 ## 2.0.2
 
-## ⭐ New Features
+### ⭐ New Features
 
 - Brand new AI binding process
 - Support for custom drivers
 
-## 🐞 Bug Fixes
+### 🐞 Bug Fixes
 
 - Optimized dataSource link editing
 - Enhanced error messages
@@ -233,7 +247,7 @@ sidebar_position: 1
 
 ## 2.0.1
 
-## 🐞 Bug Fixes
+### 🐞 Bug Fixes
 
 - Fix bug where executing multiple SQL statements at once will prompt for exceptions
 - Fix getJDBCDriver error: null [Issue #123](https://github.com/chat2db/Chat2DB/issues/123)
