@@ -3,6 +3,20 @@ title: "Changelog"
 sidebar_position: 1
 ---
 
+## 3.0.12
+
+`2023-11-13`
+
+**更新日志**
+
+- 🐞【Fixed】Copy as insert first row lost problem
+- 🐞【Fixed】DM database index bug
+- 🐞【Fixed】Point Garbled code problem
+- 🐞【Fixed】MariaDB connec database bug
+- 🐞【Fixed】Issues 792 NullPointerException
+- 🐞【Fixed】Kingbase8r6 error
+
+
 ## 3.0.11
 
 `2023-11-08`
