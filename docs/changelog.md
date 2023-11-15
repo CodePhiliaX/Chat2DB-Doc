@@ -3,11 +3,21 @@ title: "Changelog"
 sidebar_position: 1
 ---
 
+## 3.0.13
+
+`2023-11-15`
+
+**Changelog**
+
+- 🐞【Fixed】oracle datatype error
+- 🐞【Fixed】DM index error
+
+
 ## 3.0.12
 
 `2023-11-13`
 
-**更新日志**
+**Changelog**
 
 - 🐞【Fixed】Copy as insert first row lost problem
 - 🐞【Fixed】DM database index bug
@@ -271,7 +281,7 @@ sidebar_position: 1
 
 ## 2.0.0
 
-## What's Changed
+**What's Changed**
 
 - 🔥An intelligent solution that perfectly integrates SQL queries, AI assistant, and data analysis.
 - 🔥New focused mode experience for advanced datasource management.
