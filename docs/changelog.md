@@ -3,6 +3,18 @@ title: "Changelog"
 sidebar_position: 1
 ---
 
+## 3.0.14
+
+`2023-11-20`
+
+**Changelog**
+
+- 🐞【Fixed】Team paging problem
+- 🐞【Fixed】Oracle service name bug
+- 🐞【Fixed】Oracle datatype error
+- ⚡️【Optimize】Support database or schema
+- 【Developer】Friends don't worry, the company has some things recently, and is preparing 3.1.0, be patient
+
 ## 3.0.13
 
 `2023-11-15`
