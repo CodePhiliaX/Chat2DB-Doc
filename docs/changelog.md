@@ -3,6 +3,22 @@ title: "Changelog"
 sidebar_position: 1
 ---
 
+## 3.1.0
+
+`2023-12-12`
+
+**Changelog**
+
+- 🔥🔥【Optimize】The first startup time has been increased by 65%
+- 🔥🔥【Optimize】Changed the structure of the left tree 
+- 🔥🔥【Optimize】Optimized the tab switchover problem 
+- ⚡️ 【Optimize】All nodes are supported. The name of each node can be copied 
+- ⚡️【Optimize】The sql console input box supports switching databases, and will not change when the left database is switched 
+- ⭐ 【New function】Save records moved to the right toolbar, you can directly modify the name in the list 
+- ⭐【New feature】Support mongoDB 
+- ⭐【New function】Support for viewing all tables
+
+
 ## 3.0.14
 
 `2023-11-20`
