@@ -3,6 +3,17 @@ title: "Changelog"
 sidebar_position: 1
 ---
 
+## 3.1.1
+
+`2023-12-13`
+
+**Changelog**
+
+- 🐞【Fixed】Table blank problem when switching Tabs
+- 🐞【Fixed】DM or Oracle cannot display Schema
+- 🐞【Fixed】The import connection is lost. Procedure
+
+
 ## 3.1.0
 
 `2023-12-12`
