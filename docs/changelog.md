@@ -13,7 +13,6 @@ sidebar_position: 1
 - 🐞【Fixed】Switching tab causes edit data reset problem
 - 🐞【Fixed】Rename is reset after switching tab
 
-
 ## 3.1.12
 
 `2023-12-15`
@@ -22,7 +21,6 @@ sidebar_position: 1
 
 - ⚡️【Optimize】Optimized tree structure search
 - ⚡️【Optimize】Tree structure search box resident
-
 
 ## 3.1.11
 
@@ -33,7 +31,6 @@ sidebar_position: 1
 - 🐞【Fixed】A chart with a Schema cannot be saved and executed
 - 🐞【Fixed】Failure to start after the upgrade
 
-
 ## 3.1.10
 
 `2023-12-13`
@@ -43,7 +40,6 @@ sidebar_position: 1
 - 🐞【Fixed】Table blank problem when switching Tabs
 - 🐞【Fixed】DM or Oracle cannot display Schema
 - 🐞【Fixed】The import connection is lost. Procedure
-
 
 ## 3.1.0
 
