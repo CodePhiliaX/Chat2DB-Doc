@@ -3,6 +3,17 @@ title: "Changelog"
 sidebar_position: 1
 ---
 
+## 3.1.13
+
+`2023-12-15`
+
+**Changelog**
+
+- 🐞【Fixed】Tree structure search for bugs
+- 🐞【Fixed】Switching tab causes edit data reset problem
+- 🐞【Fixed】Rename is reset after switching tab
+
+
 ## 3.1.12
 
 `2023-12-15`
