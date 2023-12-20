@@ -3,6 +3,17 @@ title: "Changelog"
 sidebar_position: 1
 ---
 
+## 3.1.15
+
+`2023-12-20`
+
+**Changelog**
+
+- 🐞【Fixed】Every time I open the application, I occasionally cannot select the database problem
+- 🐞【Fixed】Compatible with old data types can not show deletion problems
+- 🐞【Fixed】Some databases cannot display the database /Schema structure
+
+
 ## 3.1.14
 
 `2023-12-15`
