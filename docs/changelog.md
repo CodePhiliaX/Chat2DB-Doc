@@ -3,6 +3,20 @@ title: "Changelog"
 sidebar_position: 1
 ---
 
+## 3.1.16
+
+`2023-12-25`
+
+**Changelog**
+
+- ⭐【New Features】Execute the Record sql Add replication button
+- ⭐【New Features】Run record sql to open the console directly
+- ⭐【New Features】The SQL column on the right of execution record and save can be expanded and dragged
+- 🐞【Fixed】Some databases could not display the Database/Schema structure
+- 🐞【Fixed】During web deployment, a page error occurs after the page switching page is refreshed
+- ⚡️【Optimize】The query result cancels in-cell scrolling and instead uses hover to view cell contents
+
+
 ## 3.1.15
 
 `2023-12-20`
