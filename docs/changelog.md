@@ -3,7 +3,123 @@ title: "Changelog"
 sidebar_position: 1
 ---
 
+## 3.1.15
+
+`2023-12-20`
+
+**Changelog**
+
+- 🐞【Fixed】Every time I open the application, I occasionally cannot select the database problem
+- 🐞【Fixed】Compatible with old data types can not show deletion problems
+- 🐞【Fixed】Some databases cannot display the database /Schema structure
+
+
+## 3.1.14
+
+`2023-12-15`
+
+**Changelog**
+
+- 🐞【Fixed】Tree structure search for bugs
+- 🐞【Fixed】Switching tab causes edit data reset problem
+- 🐞【Fixed】Rename is reset after switching tab
+
+## 3.1.12
+
+`2023-12-15`
+
+**Changelog**
+
+- ⚡️【Optimize】Optimized tree structure search
+- ⚡️【Optimize】Tree structure search box resident
+
+## 3.1.11
+
+`2023-12-13`
+
+**Changelog**
+
+- 🐞【Fixed】A chart with a Schema cannot be saved and executed
+- 🐞【Fixed】Failure to start after the upgrade
+
+## 3.1.10
+
+`2023-12-13`
+
+**Changelog**
+
+- 🐞【Fixed】Table blank problem when switching Tabs
+- 🐞【Fixed】DM or Oracle cannot display Schema
+- 🐞【Fixed】The import connection is lost. Procedure
+
+## 3.1.0
+
+`2023-12-12`
+
+**Changelog**
+
+- 🔥🔥【Optimize】The first startup time has been increased by 65%
+- 🔥🔥【Optimize】Changed the structure of the left tree 
+- 🔥🔥【Optimize】Optimized the tab switchover problem 
+- ⚡️ 【Optimize】All nodes are supported. The name of each node can be copied 
+- ⚡️【Optimize】The sql console input box supports switching databases, and will not change when the left database is switched 
+- ⭐ 【New function】Save records moved to the right toolbar, you can directly modify the name in the list 
+- ⭐【New feature】Support mongoDB 
+- ⭐【New function】Support for viewing all tables
+
+
+## 3.0.14
+
+`2023-11-20`
+
+**Changelog**
+
+- 🐞【Fixed】Team paging problem
+- 🐞【Fixed】Oracle service name bug
+- 🐞【Fixed】Oracle datatype error
+- 🐞【Fixed】Fixed an issue where MySQL changed table structure without displaying comments.
+- ⚡️【Optimize】Support database or schema
+- 【Developer】Friends don't worry, the company has some things recently, and is preparing 3.1.0, be patient
+
+## 3.0.13
+
+`2023-11-15`
+
+**Changelog**
+
+- 🐞【Fixed】oracle datatype error
+- 🐞【Fixed】DM index error
+
+
+## 3.0.12
+
+`2023-11-13`
+
+**Changelog**
+
+- 🐞【Fixed】Copy as insert first row lost problem
+- 🐞【Fixed】DM database index bug
+- 🐞【Fixed】Point Garbled code problem
+- 🐞【Fixed】MariaDB connec database bug
+- 🐞【Fixed】Issues 792 NullPointerException
+- 🐞【Fixed】Kingbase8r6 error
+
+
 ## 3.0.11
+
+`2023-11-08`
+
+**Changelog**
+
+- ⭐【New Features】Oracle connections support the Service name mode
+- ⭐【New Features】[New function] Edit table data to support batch copy, clone, delete (click 1X1 cell to select/cancel, hold down shift/ctrl/cmd to select multiple)
+- ⚡️【Optimize】After the update is completed, click restart to close the problem that cannot be automatically opened (hot update cannot fix this problem, you need to download a new version to cover the client)
+- 🐞【Fixed】database and schema searches support case ambiguity matching
+- 🐞【Fixed】Where database was not displayed after being added
+- 🐞【Fixed】sql formatting to ·now()· format error
+
+
+## 3.0.10
 
 `2023-11-06`
 
@@ -94,7 +210,7 @@ sidebar_position: 1
 
 ## 2.1.0
 
-## ⭐ New Features
+** ⭐ New Features**
 
 - 🔥The team function is newly launched, supporting team collaboration. R&D does not require knowing the online database
   password, solving the security issue of enterprise database accounts. It is recommended to directly deploy the team
@@ -103,16 +219,16 @@ sidebar_position: 1
 
 ## 2.0.14
 
-## 🐞 Bug Fixes
+**🐞 Bug Fixes**
 
 - Fix the issue of 'Oracle' query 'Blob' reporting errors
 - Modify the paging logic and fix some SQL queries that cannot be queried
 
 ## 2.0.13
 
-## ⭐ New Features
+** ⭐ New Features**
 
-## 🐞 Bug Fixes
+**🐞 Bug Fixes**
 
 - Fixed a bug where sql formatting was not selected
 - Fixed open view lag issue
@@ -120,13 +236,13 @@ sidebar_position: 1
 
 ## 2.0.12
 
-## ⭐ New Features
+** ⭐ New Features**
 
 - 🔥Supports viewing views, functions, triggers, and procedures
 - Support selected sql formatting
 - Added new dark themes
 
-## 🐞 Bug Fixes
+**🐞 Bug Fixes**
 
 - Fixed sql formatting failure issue
 - Fixed an issue where locally stored theme colors and background colors are incompatible with the new version, causing
@@ -140,7 +256,7 @@ sidebar_position: 1
 
 ## 2.0.11
 
-## 🐞 Bug Fixes
+**🐞 Bug Fixes**
 
 - Fix the issue where SSH does not support older versions of encryption algorithms
 - Fix the issue of SQL Server 2008 not being able to connect
@@ -148,7 +264,7 @@ sidebar_position: 1
 
 ## 2.0.10
 
-## 🐞 Bug Fixes
+**🐞 Bug Fixes**
 
 - Activate the console for the latest operation when you create or start a console、Records the last console used
 - The replication function of the browser, such as edge, is unavailable
@@ -157,13 +273,13 @@ sidebar_position: 1
 
 ## 2.0.9
 
-## 🐞 Bug Fixes
+**🐞 Bug Fixes**
 
 -Fix the issue of Windows flash back
 
 ## 2.0.8
 
-## 🐞 Bug Fixes
+**🐞 Bug Fixes**
 
 - Repair the Scientific notation in some databases [Issue #378](https://github.com/chat2db/Chat2DB/issues/378)
 - Fix some cases where data is not displayed
@@ -175,56 +291,56 @@ sidebar_position: 1
 
 ## 2.0.7
 
-## ⭐ New Features
+** ⭐ New Features**
 
 - Export query result as file is supported
 
-## 🐞 Bug Fixes
+**🐞 Bug Fixes**
 
 - Fixed ai config issues [Issue #346](https://github.com/chat2db/Chat2DB/issues/346)
 
 ## 2.0.6
 
-## 🐞 Bug Fixes
+**🐞 Bug Fixes**
 
 - Fixed: When there are too many tables under the selected library, the "New Console" button at the bottom
   disappears [Issue #314](https://github.com/chat2db/Chat2DB/issues/314)
 
 ## 2.0.5
 
-## ⭐ New Features
+** ⭐ New Features**
 
 - Supports 25 free uses of AIGC every day.
 - Support for querying data pagination.
 - Support switching between multiple databases in PostgreSQL.
 - Support for hot updating of client-side code allows for rapid bug fixes.
 
-## 🐞 Bug Fixes
+**🐞 Bug Fixes**
 
 - Default return alias for returned results [Issue #270](https://github.com/chat2db/Chat2DB/issues/270)
 - Fixed around 100 bugs, of course, many were repetitive bugs.
 
 ## 2.0.4
 
-## ⭐ New Features
+** ⭐ New Features**
 
 - Support DB2 database
 - Support renaming after console saving
 - Support prompts during SQL execution
 
-## 🐞 Bug Fixes
+**🐞 Bug Fixes**
 
 - Fix the bug that the database in sqlserver is all numbers
 - Fix ssh connection bug
 
 ## 2.0.2
 
-## ⭐ New Features
+** ⭐ New Features**
 
 - Brand new AI binding process
 - Support for custom drivers
 
-## 🐞 Bug Fixes
+**🐞 Bug Fixes**
 
 - Optimized dataSource link editing
 - Enhanced error messages
@@ -233,7 +349,7 @@ sidebar_position: 1
 
 ## 2.0.1
 
-## 🐞 Bug Fixes
+**🐞 Bug Fixes**
 
 - Fix bug where executing multiple SQL statements at once will prompt for exceptions
 - Fix getJDBCDriver error: null [Issue #123](https://github.com/chat2db/Chat2DB/issues/123)
@@ -243,7 +359,7 @@ sidebar_position: 1
 
 ## 2.0.0
 
-## What's Changed
+**What's Changed**
 
 - 🔥An intelligent solution that perfectly integrates SQL queries, AI assistant, and data analysis.
 - 🔥New focused mode experience for advanced datasource management.
