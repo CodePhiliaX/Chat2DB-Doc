@@ -13,7 +13,7 @@ module.exports = withNextra({
     return [
       {
         source: "/",
-        destination: "/docs/getting-started",
+        destination: "/docs/start-guide/getting-started",
         statusCode: 301,
       },
     ];
