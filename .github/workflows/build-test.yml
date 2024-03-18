@@ -1,12 +1,12 @@
 # 当前工作流的名字  随便取
-name: Build Docusaurus
+name: Build Docusaurus Test 
 
 # 指定 workflow 触发的 event
-# 在main分支提交的时候触发
+# 在dev分支提交的时候触发
 on:
   push:
     branches:
-      - main
+      - dev 
 
 # 一个 workflow 由一个或多个 job 组成
 jobs:
@@ -23,7 +23,7 @@ jobs:
         uses: ./.github/actions/init
       - name: Build
         run: 
-          pnpm run build
+          pnpm build
       # 把文件上传到OSS
       - name: Set up oss utils
         uses: yizhoumo/setup-ossutil@v1
@@ -34,4 +34,4 @@ jobs:
           ossutil-version: '1.7.16'
       - name: Upload to oss
         run: |
-          ossutil cp -rf --acl=public-read ./build/ oss://chat2db-doc/
+          ossutil cp -rf --acl=public-read ./build/ oss://chat2db-doc-test/
