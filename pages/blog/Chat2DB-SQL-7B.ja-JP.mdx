@@ -1,0 +1,70 @@
+---
+image: ""
+description: "今回公開されたChat2DB-SQL-7Bモデルは、70億のパラメータを持ち、CodeLlamaによる精密なチューニングが施されています。このモデルは、自然言語からSQLへの変換タスク専用に設計されており、複数のSQL方言をサポートし、最大16kのコンテキスト長を処理する能力を持っています"
+date: April 7, 2024
+---
+
+
+# Chat2DB-GLM-7B
+
+## 紹介
+
+Chat2DB-GLMは、[Chat2DB](https://github.com/chat2db/Chat2DB/)のオープンソースプロジェクトの一部であり、自然言語クエリを構造化されたSQL文に変換する効率的な方法を提供することを目的としています。今回公開された[Chat2DB-SQL-7B](https://huggingface.co/Chat2DB/Chat2DB-SQL-7B)モデルは、70億のパラメータを持ち、CodeLlamaによる精密なチューニングが施されています。このモデルは、自然言語からSQLへの変換タスク専用に設計されており、複数のSQL方言をサポートし、最大16kのコンテキスト長を処理する能力を持っています。
+
+## 方言サポート
+
+Chat2DB-SQL-7Bモデルは、Mysql、Postgres、Sqliteなどを含む幅広いSQL方言をサポートしています。この広範な方言サポートにより、モデルの幅広い適用性と柔軟性が保証されます。
+
+## モデルの効果
+
+Chat2DB-SQL-7Bモデルは、複数の方言とSQLの重要部分で優れた性能を示しています。以下は、一般的なSQLを例に、spiderデータセットを基にした評価結果で、モデルがSQLの各部分や様々なSQL関数（日付関数、文字列関数など）を処理する能力を概観したものです。
+
+| 方言         | select | where | group | order | function | total |
+|:-----------|:------:|:-----:|:-----:|------:|:--------:|------:|
+| 一般的なSQL | 91.5   | 83.7  | 80.5  | 98.2  | 96.2     | 77.3  |
+
+## モデルの限界と使用上の注意
+
+Chat2DB-SQL-7Bは、方言MySql、PostgreSQL、および一般的なSQLに対してチューニングされています。その他のSQL方言については、基本的な変換能力を提供しますが、特定の方言の特殊関数（日付関数、文字列関数など）を処理する際には誤差が発生する可能性があります。データセットの変更に伴い、モデルの性能も異なる場合があります。
+
+このモデルは主に学術研究と学習目的に使用されることを意図しています。モデルの出力の正確性を保証するものではなく、本番環境でのパフォーマンスを保証するものでもありません。このモデルの使用によって生じる可能性のある損失について、本プロジェクトおよびその貢献者は一切の責任を負いません。ユーザーは、特定のユースケースでの適用性を慎重に評価することをお勧めします。
+
+## モデル推論
+
+transformersを使用してモデルをロードし、以下のサンプルコードでChat2DB-SQL-7Bモデルを使用できます。プロンプトが異なるとモデルのパフォーマンスも異なりますので、以下のサンプルのプロンプト形式をできるだけ使用してください。以下のコードブロックのmodel_pathは、モデルのローカルパスに置き換えることができます。
+
+```python
+import torch
+from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+model_path = "Chat2DB/Chat2DB-SQL-7B" # ここをモデルのローカルパスに置き換えることができます
+tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+model = AutoModelForCausalLM.from_pretrained(model_path, device_map="auto",trust_remote_code=True, torch_dtype=torch.float16,use_cache=True)
+pipe = pipeline(  "text-generation",model=model,tokenizer=tokenizer,return_full_text=False,max_new_tokens=100)
+prompt = "### Database Schema\n\n['CREATE TABLE \"stadium\" (\\n\"Stadium_ID\" int,\\n\"Location\" text,\\n\"Name\" text,\\n\"Capacity\" int,\\n\"Highest\" int,\\n\"Lowest\" int,\\n\"Average\" int,\\nPRIMARY KEY (\"Stadium_ID\")\\n);', 'CREATE TABLE \"singer\" (\\n\"Singer_ID\" int,\\n\"Name\" text,\\n\"Country\" text,\\n\"Song_Name\" text,\\n\"Song_release_year\" text,\\n\"Age\" int,\\n\"Is_male\" bool,\\nPRIMARY KEY (\"Singer_ID\")\\n);', 'CREATE TABLE \"concert\" (\\n\"concert_ID\" int,\\n\"concert_Name\" text,\\n\"Theme\" text,\\n\"Stadium_ID\" text,\\n\"Year\" text,\\nPRIMARY KEY (\"concert_ID\"),\\nFOREIGN KEY (\"Stadium_ID\") REFERENCES \"stadium\"(\"Stadium_ID\")\\n);', 'CREATE TABLE \"singer_in_concert\" (\\n\"concert_ID\" int,\\n\"Singer_ID\" text,\\nPRIMARY KEY (\"concert_ID\",\"Singer_ID\"),\\nFOREIGN KEY (\"concert_ID\") REFERENCES \"concert\"(\"concert_ID\"),\\nFOREIGN KEY (\"Singer_ID\") REFERENCES \"singer\"(\"Singer_ID\")\\n);']\n\n\n### Task \n\nデータベーススキーマ情報に基づいて、How many singers do we have?[SQL]\n"
+response = pipe(prompt)[0]["generated_text"]
+print(response)
+```
+
+## ハードウェア要件
+
+| モデル           | 最小GPUメモリ(推論) | 最小GPUメモリ(効率的なパラメータ微調整) |
+|:--------------:|:-----------------:|:-------------------------:|
+| Chat2DB-SQL-7B |       14GB        |            20GB           |
+
+## モデルのダウンロード
+- huggingface：[Chat2DB-SQL-7B](https://huggingface.co/Chat2DB/Chat2DB-SQL-7B)
+- modelscope：[Chat2DB-SQL-7B](https://modelscope.cn/models/Chat2DB/Chat2DB-SQL-7B/summary)
+
+## 貢献ガイド
+Chat2DB-GLMプロジェクトへの貢献を歓迎し、奨励しています。問題の報告、新機能の提案、コード修正や改善の直接的な提出など、あなたの支援は非常に貴重です。
+
+貢献に興味がある場合は、以下の貢献ガイドに従ってください：
+
+問題報告：GitHub Issuesを通じて遭遇した問題やバグを報告してください。
+プルリクエストの提出：コードベースに直接貢献したい場合は、まずリポジトリをフォークし、プルリクエスト（PR）を提出してください。
+ドキュメントの改善：ベストプラクティス、サンプルコード、ドキュメントの改善などを提供することを歓迎します。
+
+## ライセンス
+このプロジェクトのモデルの重みは、Code Llamaのカスタム商用ライセンスによって制約されています。詳細はこちらをご覧ください：[カスタム商用ライセンス](https://llama.meta.com/llama-downloads/)
+
+このソフトウェアを使用する前に、ライセンス条項を十分に理解していることを確認してください。
