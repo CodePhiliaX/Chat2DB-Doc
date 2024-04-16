@@ -1,37 +1,37 @@
-# 当前工作流的名字  随便取
-name: Build
+# # 当前工作流的名字  随便取
+# name: Build
 
-# 指定 workflow 触发的 event
-# 在main分支提交的时候触发
-on:
-  push:
-    branches:
-      - main
+# # 指定 workflow 触发的 event
+# # 在main分支提交的时候触发
+# on:
+#   push:
+#     branches:
+#       - main
 
-# 一个 workflow 由一个或多个 job 组成
-jobs:
-  # job id: 是 job 的唯一标识
-  build_and_deploy:
-    # 在 Github 中显示的 job 名称
-    name: Build and Deploy
-    # job 运行的环境配置
-    runs-on: ubuntu-latest
-    # 一个 job 由多个 step 组成
-    steps:
-      - uses: actions/checkout@v2
-      - name: Init environment
-        uses: ./.github/actions/init
-      - name: Build
-        run: 
-          pnpm run build
-      # 把文件上传到OSS
-      - name: Set up oss utils
-        uses: yizhoumo/setup-ossutil@v1
-        with:
-          endpoint: "oss-cn-zhangjiakou.aliyuncs.com"
-          access-key-id: ${{ secrets.OSS_ACCESS_KEY_ID }}
-          access-key-secret: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
-          ossutil-version: '1.7.16'
-      - name: Upload to oss
-        run: |
-          ossutil cp -rf --acl=public-read ./build/ oss://chat2db-doc/
+# # 一个 workflow 由一个或多个 job 组成
+# jobs:
+#   # job id: 是 job 的唯一标识
+#   build_and_deploy:
+#     # 在 Github 中显示的 job 名称
+#     name: Build and Deploy
+#     # job 运行的环境配置
+#     runs-on: ubuntu-latest
+#     # 一个 job 由多个 step 组成
+#     steps:
+#       - uses: actions/checkout@v2
+#       - name: Init environment
+#         uses: ./.github/actions/init
+#       - name: Build
+#         run: 
+#           pnpm run build
+#       # 把文件上传到OSS
+#       - name: Set up oss utils
+#         uses: yizhoumo/setup-ossutil@v1
+#         with:
+#           endpoint: "oss-cn-zhangjiakou.aliyuncs.com"
+#           access-key-id: ${{ secrets.OSS_ACCESS_KEY_ID }}
+#           access-key-secret: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+#           ossutil-version: '1.7.16'
+#       - name: Upload to oss
+#         run: |
+#           ossutil cp -rf --acl=public-read ./build/ oss://chat2db-doc/
