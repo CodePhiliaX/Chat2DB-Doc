@@ -4,10 +4,16 @@ import useLocalesMap from "./components/use-locales-map";
 import { languageMap, tableOfContentsTitleMap } from "./translations/text";
 
 export default {
-  logo: <div style={{display: 'flex',alignItems:'center'}}>
-    <img style={{width:'32px',marginRight: '8px'}} src="https://oss.sqlgpt.cn/app/avatar/custom/43088fd6190e4874a4e04a23f22345c8.webp" alt="Chat2DB" />
-    <span  style={{fontWeight: 700,fontSize:'20px'}}>Chat2DB</span>
-  </div>,
+  logo: (
+    <div style={{ display: "flex", alignItems: "center" }}>
+      <img
+        style={{ width: "32px", marginRight: "8px" }}
+        src="https://cdn.chat2db-ai.com/img/logo.svg"
+        alt="Chat2DB"
+      />
+      <span style={{ fontWeight: 700, fontSize: "20px" }}>Chat2DB</span>
+    </div>
+  ),
   logoLink: "https://chat2db.ai",
   project: {
     link: "https://github.com/chat2db/chat2db",
