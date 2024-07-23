@@ -1,0 +1,118 @@
+## DBMotion
+
+### Basic Introduction
+
+The data transfer service DBMotion is a lightweight, green database **migration**, **synchronization**, and **verification tool**. It supports domestic data migration, disaster recovery drills, two-city three-center, and cross-regional active-active setups. With seamless integration, high performance, and no impact on the source database, it facilitates smooth migration and disaster recovery across multiple clouds.
+
+### Feature Introduction
+
+#### Supported Databases
+
+`v1.0.0 DBMotion Plugin` supports `MySQL to MySQL` object migration, full data migration, and incremental synchronization. It currently supports versions 5.6, 5.7, and 8.0 for same version migration or migration to higher versions.
+
+---
+
+#### Databases to be Supported
+
+The following database types have been implemented and are pending integration into the `DBMotion Plugin`:
+
+- `PostgreSQL to PostgreSQL` object migration, full data migration, and incremental synchronization (currently does not support DDL and bidirectional synchronization). Supports version 9.6 and above for same version migration or migration to higher versions.
+
+- `MySQL to Clickhouse` object migration, full data migration, and incremental synchronization. Supports MySQL versions 5.6, 5.7, 8.0 to Clickhouse versions 22 and later.
+
+- `MongoDB to MongoDB` object migration, full data migration, and incremental synchronization. Supports MongoDB version 3.6 and above for same version migration or migration to higher versions.
+
+- `openGauss to openGauss` object migration, full data migration, and incremental synchronization. Supports version 5.0.0 and above for both unidirectional and bidirectional synchronization.
+
+- `GaussDB to GaussDB` object migration, full data migration, and incremental synchronization. Supports version 503.1 and above for same version migration or migration to higher versions.
+
+- `Oracle to GaussDB` full data migration and incremental synchronization.
+
+- `SQL Server to SQL Server` object migration and full data migration. Supports version 2017/2019 for mutual migration.
+
+- `Redis to Redis` full data migration and incremental synchronization. Supports version 5.0 and above for same version migration or migration to higher versions.
+
+- `MySQL to Kafka` full data migration.
+
+- `PostgreSQL/GaussDB/openGauss to Kafka` full data migration and incremental subscription.
+
+---
+
+### Application Scenarios
+
+#### 1. Data Center and Cloud Database Migration
+
+DBMotion supports both Docker offline and cloud versions. Users can download the offline version for database migration within their own data centers or use the SaaS version for cloud migration or cross-cloud migration. It supports migration from cloud to on-premises, on-premises to cloud, and disaster recovery synchronization between RDS and ECS or on-premises data centers.
+
+#### 2. Domestic Database Migration
+
+Using a visual transparent migration tool, migrate non-domestic databases to domestic databases, or from overseas cloud to domestic cloud. It supports the migration of tables, indexes, stored procedures, and custom functions, ensuring efficient, transparent, and secure full and incremental data synchronization with zero downtime. It supports object and data verification, ensuring data consistency and enabling rollback at any time.
+
+#### 3. Cross-Regional Active-Active Data Synchronization
+
+Supports bidirectional synchronization for MySQL and openGauss, effectively avoiding circular replication and providing three conflict resolution strategies: overwrite, ignore, and error. Supports two-city three-center and cross-regional active-active architectures, and disaster recovery drills.
+
+---
+
+### Advantages
+
+- Zero Downtime: No business downtime during the entire migration process, with no locks added to the source database. Various DDL operations can be performed on the source database during migration.
+
+- Convenient and Intuitive: Uses visual operations for easy data migration and verification with just a few clicks.
+
+- High Performance: All processes including object, full, incremental, and verification use multi-threading, achieving synchronization performance of up to 40M/s.
+
+- Secure and Efficient: Supports SSL connections to ensure data transmission security.
+
+- Stable and Reliable: Supports resumable transmission, automatic reconnection if the source end is disconnected, and automatic retry if the target end fails.
+
+- Pre-Check: Conducts pre-checks before official migration to identify potential issues in advance.
+
+- Data Verification: Supports data verification after migration to ensure data switching reliability.
+
+- Bidirectional Synchronization: Actively avoids circular replication and supports conflict resolution strategies.
+
+- Object Mapping/Where Condition Filtering: Supports object name mapping between source and target databases and ignores some sensitive data during synchronization.
+
+- Hot Modification: Supports hot modification of synchronization objects during the synchronization process.
+
+- Cross-Network Access: Uses proxy gateways to access internal networks or cloud RDS.
+
+---
+
+### Pricing
+
+The `DBMotion Plugin` is available for free to `Chat2DB Pro` members for a limited time.
+
+---
+
+### Usage Restrictions
+
+#### 1. Bandwidth Limitations
+
+Network bandwidth between the source database and DBMotion, and between DBMotion and the target database, will limit migration speed. Poor network bandwidth on either end will result in reduced migration performance.
+
+#### 2. Database Performance Limitations
+
+The performance of the source or target database can affect DBMotion migration performance. Poor source database performance will slow down data retrieval, while poor target database performance will slow down data storage.
+
+#### 3. MySQL Binlog Format Issues
+
+Binlog must use the ROW format to ensure DBMotion can correctly parse data modifications for incremental synchronization. For DDL changes, it is recommended to use `use db1; alter table tb1` instead of `alter table db2.tb1` to avoid misjudgment during filtering.
+
+#### 4. Source Database Object Selection
+
+When selecting all tables under a schema in the interface, it is not possible to distinguish between selecting all displayed tables or the entire schema. The current implementation synchronizes all tables under the selected schema, including newly created tables.
+
+#### 5. Object Dependency Depth
+
+DBMotion can handle object dependencies within 10 layers. For example, if view v10 depends on v9, v9 on v8, and so on up to v1, DBMotion will handle it, but dependencies deeper than 10 layers may cause errors.
+
+#### 6. Table Creation During Migration
+
+If a new table is created during the interval between object migration and full migration, it will not be synchronized because the object migration did not include the new table structure.
+
+#### 7. Other Issues
+```
+Illegal mix of collations (utf8mb4_general_ci,IMPLICIT) and (utf8mb4_0900_ai_ci,IMPLICIT) for operation '=' MySQL 8.0 defaults to using utf8mb4_0900_ai_ci collation for utf8mb4, different from the utf8mb4_general_ci default in 5.6 and 5.7. If a view uses `convert(tt.ID using utf8mb4)`, it may cause an error during object migration. It is recommended to manually modify the view in the target database to `convert(tt.ID using utf8mb4) COLLATE utf8mb4_general_ci` to avoid this issue.
+```
