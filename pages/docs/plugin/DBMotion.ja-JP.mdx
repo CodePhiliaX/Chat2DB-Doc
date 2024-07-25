@@ -1,118 +1,280 @@
-## DBMotion
+##DBモーション
 
-### Basic Introduction
+### 基本的な紹介
 
-The data transfer service DBMotion is a lightweight, green database **migration**, **synchronization**, and **verification tool**. It supports domestic data migration, disaster recovery drills, two-city three-center, and cross-regional active-active setups. With seamless integration, high performance, and no impact on the source database, it facilitates smooth migration and disaster recovery across multiple clouds.
+データ転送サービス DBMotion は、軽量で環境に優しいデータベース **移行**、**同期**、**検証ツール**です。ローカライズされたデータ移行、災害復旧訓練、2 か所の 3 つのセンター、および異なる場所での複数のアクティビティをサポートします。ソース データベースを意識せず、シンプルで統合が容易で、スムーズなパフォーマンスを実現します。複数のクラウド間の移行を支援し、災害復旧を自由に提供します。
 
-### Feature Introduction
+＃＃＃ 特徴
 
-#### Supported Databases
+#### サポートされているデータベース
 
-`v1.0.0 DBMotion Plugin` supports `MySQL to MySQL` object migration, full data migration, and incremental synchronization. It currently supports versions 5.6, 5.7, and 8.0 for same version migration or migration to higher versions.
-
----
-
-#### Databases to be Supported
-
-The following database types have been implemented and are pending integration into the `DBMotion Plugin`:
-
-- `PostgreSQL to PostgreSQL` object migration, full data migration, and incremental synchronization (currently does not support DDL and bidirectional synchronization). Supports version 9.6 and above for same version migration or migration to higher versions.
-
-- `MySQL to Clickhouse` object migration, full data migration, and incremental synchronization. Supports MySQL versions 5.6, 5.7, 8.0 to Clickhouse versions 22 and later.
-
-- `MongoDB to MongoDB` object migration, full data migration, and incremental synchronization. Supports MongoDB version 3.6 and above for same version migration or migration to higher versions.
-
-- `openGauss to openGauss` object migration, full data migration, and incremental synchronization. Supports version 5.0.0 and above for both unidirectional and bidirectional synchronization.
-
-- `GaussDB to GaussDB` object migration, full data migration, and incremental synchronization. Supports version 503.1 and above for same version migration or migration to higher versions.
-
-- `Oracle to GaussDB` full data migration and incremental synchronization.
-
-- `SQL Server to SQL Server` object migration and full data migration. Supports version 2017/2019 for mutual migration.
-
-- `Redis to Redis` full data migration and incremental synchronization. Supports version 5.0 and above for same version migration or migration to higher versions.
-
-- `MySQL to Kafka` full data migration.
-
-- `PostgreSQL/GaussDB/openGauss to Kafka` full data migration and incremental subscription.
+「v1.0.0 DBMotion プラグイン」は、「MySQL から MySQL」オブジェクトの移行、完全なデータ移行、および増分同期をサポートしています。現在、同じバージョンの移行または 5.6、5.7、および 8.0 の上位バージョンへの移行をサポートしています。
 
 ---
 
-### Application Scenarios
+#### サポートされるデータベース
 
-#### 1. Data Center and Cloud Database Migration
+**以下はサポートされており、「DBMotion プラグイン」に統合されるデータベース タイプです**
 
-DBMotion supports both Docker offline and cloud versions. Users can download the offline version for database migration within their own data centers or use the SaaS version for cloud migration or cross-cloud migration. It supports migration from cloud to on-premises, on-premises to cloud, and disaster recovery synchronization between RDS and ECS or on-premises data centers.
+**「PostgreSQL から PostgreSQL」** オブジェクトの移行、完全なデータ移行、増分同期 (DDL と双方向同期はまだサポートされていません)。 現在、同じバージョンまたは上位バージョンへの移行は、バージョン 9.6 以降でサポートされています。
 
-#### 2. Domestic Database Migration
+**「MySQL から Clickhouse」** オブジェクトの移行、完全なデータ移行、増分同期。MySQL 5.6、5.7、8.0 から Clickhouse 22 以降のバージョンをサポートします。
 
-Using a visual transparent migration tool, migrate non-domestic databases to domestic databases, or from overseas cloud to domestic cloud. It supports the migration of tables, indexes, stored procedures, and custom functions, ensuring efficient, transparent, and secure full and incremental data synchronization with zero downtime. It supports object and data verification, ensuring data consistency and enabling rollback at any time.
+**「MongoDB から MongoDB」** オブジェクトの移行、完全なデータ移行、および増分同期。現在、同じバージョンの移行または MongoDB 3.6 以降の上位バージョンへの移行がサポートされています。
 
-#### 3. Cross-Regional Active-Active Data Synchronization
+**「openGauss から openGauss」** オブジェクトの移行、完全なデータの移行、増分同期。バージョン 5.0.0 以降の一方向および双方向の同期をサポートします。
 
-Supports bidirectional synchronization for MySQL and openGauss, effectively avoiding circular replication and providing three conflict resolution strategies: overwrite, ignore, and error. Supports two-city three-center and cross-regional active-active architectures, and disaster recovery drills.
+**「GaussDB から GaussDB」** オブジェクトの移行、完全なデータ移行、および増分同期。バージョン 503.1 以降では、同じバージョンの移行または上位バージョンへの移行がサポートされます。
 
----
+**「Oracle から GaussDB」** の完全なデータ移行と増分同期。
 
-### Advantages
+**「SQL Server から SQL Server」** オブジェクトの移行と完全なデータの移行は、現在 2017/2019 の同じバージョンの相互移行をサポートしています。
 
-- Zero Downtime: No business downtime during the entire migration process, with no locks added to the source database. Various DDL operations can be performed on the source database during migration.
+**「Redis から Redis」** の完全なデータ移行と増分同期は、現在、同じバージョンの移行または 5.0 以降の上位バージョンへの移行をサポートしています。
 
-- Convenient and Intuitive: Uses visual operations for easy data migration and verification with just a few clicks.
+**「MySQL から Kafka」** への完全なデータ移行。
 
-- High Performance: All processes including object, full, incremental, and verification use multi-threading, achieving synchronization performance of up to 40M/s.
-
-- Secure and Efficient: Supports SSL connections to ensure data transmission security.
-
-- Stable and Reliable: Supports resumable transmission, automatic reconnection if the source end is disconnected, and automatic retry if the target end fails.
-
-- Pre-Check: Conducts pre-checks before official migration to identify potential issues in advance.
-
-- Data Verification: Supports data verification after migration to ensure data switching reliability.
-
-- Bidirectional Synchronization: Actively avoids circular replication and supports conflict resolution strategies.
-
-- Object Mapping/Where Condition Filtering: Supports object name mapping between source and target databases and ignores some sensitive data during synchronization.
-
-- Hot Modification: Supports hot modification of synchronization objects during the synchronization process.
-
-- Cross-Network Access: Uses proxy gateways to access internal networks or cloud RDS.
+**「PostgreSQL/GaussDB/openGauss から Kafka」** 完全なデータ移行、増分サブスクリプション。
 
 ---
 
-### Pricing
+### アプリケーションシナリオ
 
-The `DBMotion Plugin` is available for free to `Chat2DB Pro` members for a limited time.
+#### 1. コンピューター室およびクラウド上およびクラウド外でのデータベースの移行
+
+DBMotion は、Docker のオフライン バージョンとクラウド バージョンをサポートしており、ユーザーはオフライン バージョンをダウンロードして、自分のコンピュータ ルームでデータベースの移行操作を実行できます。 クラウド上の SAAS バージョンを直接使用して、オンクラウドまたはクロスクラウドへの移行を実行することもできます。また、オンクラウドからオフクラウドへの移行、およびオフクラウドからオンクラウドへの移行もサポートされます。 ECS またはオフラインのコンピュータ ルームに転送します。
+
+
+#### 2. 国内データベースの移行
+視覚的で透過的な移行ツールを使用して、海外データベースを国内データベースに移行し、海外クラウドを国内クラウドに移行します。 テーブル、インデックス、その他の構造、およびストアド プロシージャ、カスタム関数、その他のコードの変換をサポートし、組み込まれた専門家の経験とベスト プラクティスを通じて、効率的で透過的かつ安全なビジネスの完全かつ増分データの同期を保証し、ゼロゼロのデータ同期を実現します。ダウンタイム移行のサポート オブジェクトとデータの検証によりデータの一貫性が保証され、いつでもロールバックできます。
+
+#### 3. リモート マルチアクティブ データ同期
+MySQL と openGauss 間の双方向同期をサポートし、循環レプリケーションを効果的に回避し、上書き、無視、エラー報告という 3 つの競合解決戦略をサポートします。 2拠点3拠点・多拠点マルチアクティブのアーキテクチャに対応し、災害復旧訓練もサポートします。
+
 
 ---
 
-### Usage Restrictions
+### 利点と特徴
 
-#### 1. Bandwidth Limitations
+- ゼロ ダウンタイム: 移行プロセス全体でビジネス ダウンタイムは必要なく、ソース データベースにロックはかかりません。ソース ライブラリは、移行プロセス中にさまざまな DDL 操作を実行できます。
 
-Network bandwidth between the source database and DBMotion, and between DBMotion and the target database, will limit migration speed. Poor network bandwidth on either end will result in reduced migration performance.
+- 便利で直感的: 視覚的な操作により、マウスをクリックするだけでデータの移行と検証が完了します
 
-#### 2. Database Performance Limitations
+- 同時実行性と高いパフォーマンス: オブジェクト、フル、インクリメンタル、および検証プロセスはすべてマルチスレッド同時実行性を使用し、同期パフォーマンスは 40M/s に達します。
 
-The performance of the source or target database can affect DBMotion migration performance. Poor source database performance will slow down data retrieval, while poor target database performance will slow down data storage.
+- 安全かつ効率的: SSL 接続をサポートし、送信データのセキュリティを確保します。
 
-#### 3. MySQL Binlog Format Issues
+- 安定性と信頼性: 送信の再開、ソースが切断された場合の自動再接続、ターゲットが失敗した場合の自動再試行をサポートします。
 
-Binlog must use the ROW format to ensure DBMotion can correctly parse data modifications for incremental synchronization. For DDL changes, it is recommended to use `use db1; alter table tb1` instead of `alter table db2.tb1` to avoid misjudgment during filtering.
+- 事前チェック: 正式な移行の前に事前チェックを行い、移行プロセス中に発生する可能性のある問題を発見します。
 
-#### 4. Source Database Object Selection
+- データ検証: データ切り替えを保護するため、移行後のデータ検証をサポートします。
 
-When selecting all tables under a schema in the interface, it is not possible to distinguish between selecting all displayed tables or the entire schema. The current implementation synchronizes all tables under the selected schema, including newly created tables.
+- 双方向同期: 循環レプリケーションを積極的に回避し、競合ポリシーの処理をサポートします。
 
-#### 5. Object Dependency Depth
+- オブジェクト マッピング/Where 条件フィルタリング: ソース ライブラリとターゲット ライブラリ間のオブジェクト名のマッピングをサポートし、同期中の一部の機密データの無視をサポートします。
 
-DBMotion can handle object dependencies within 10 layers. For example, if view v10 depends on v9, v9 on v8, and so on up to v1, DBMotion will handle it, but dependencies deeper than 10 layers may cause errors.
+- ホット変更: 同期中の同期オブジェクトのホット変更をサポートします。
 
-#### 6. Table Creation During Migration
+- クロスネットワーク アクセス: プロキシ ゲートウェイ経由でイントラネットまたはクラウド RDS にアクセスできます。
 
-If a new table is created during the interval between object migration and full migration, it will not be synchronized because the object migration did not include the new table structure.
 
-#### 7. Other Issues
-```
-Illegal mix of collations (utf8mb4_general_ci,IMPLICIT) and (utf8mb4_0900_ai_ci,IMPLICIT) for operation '=' MySQL 8.0 defaults to using utf8mb4_0900_ai_ci collation for utf8mb4, different from the utf8mb4_general_ci default in 5.6 and 5.7. If a view uses `convert(tt.ID using utf8mb4)`, it may cause an error during object migration. It is recommended to manually modify the view in the target database to `convert(tt.ID using utf8mb4) COLLATE utf8mb4_general_ci` to avoid this issue.
-```
+---
+
+### 料金表
+
+「DBMotion プラグイン」は、期間限定で「Chat2DB Pro」メンバーに無料で提供されます。
+
+
+
+---
+
+### 使用制限
+
+#### 1. 帯域幅の制限
+
+ソース データベースから DBMotion まで、および DBMotion からターゲット データベースまでのネットワーク帯域幅によって、移行の速度が制限されます。どちらかの側のネットワーク帯域幅が不十分な場合、移行パフォーマンスが低下し、移行速度が指定された移行速度に達しなくなります。
+
+#### 2. データベースのパフォーマンスの制限
+
+ソース ライブラリまたはターゲット ライブラリのパフォーマンスにより、DBMotion 移行のパフォーマンスが低下します。ソース ライブラリのパフォーマンスが低いと、DBMotion によるデータのフェッチが遅くなり、ターゲット ライブラリのパフォーマンスが低いと、DBMotion でのデータの保存が遅くなります。
+
+#### 3. MySQL バイナリログ形式の問題
+
+DBMotion がデータ変更を正しく解析できるように、binlog は ROW 形式を使用する必要があります。これにより、ターゲット DDL 変更に対して増分同期が行われるときに、alter を使用する代わりに db1; alter table tb1 を使用するのと同様の方法を使用することをお勧めします。 table db2.tb1. は、DBMotion がデータベースを誤って判断し、この変更をフィルタリングする必要があるかどうかを判断する際にエラーが発生するのを防ぎます。
+
+#### 4. ソース データベース オブジェクトの選択では、1 つのノードをすべて選択するか、現在の子ノードをすべて選択するかを区別できません。
+
+インターフェイス上のスキーマの下にあるすべてのテーブルを選択する場合、インターフェイスに表示されているすべてのテーブルが選択されているのか、それともスキーマ全体が選択されているのかを区別することはできません。現在、同期はスキーマ全体をチェックすることによって実行されます。つまり、このスキーマの下にあるすべての現在のテーブルと、後で作成されるテーブルがターゲットに同期されます。
+
+#### 5. オブジェクトの依存関係の層が多すぎると、やはりエラーが発生します。
+
+DBMotion は現在、10 レイヤー内のオブジェクトの依存関係を処理します。つまり、ビュー v10 は v9 に依存し、v9 は v8 に依存し、... v2 は v1 に依存し、DBMotion は自動的にそれを処理しますが、依存関係が 10 レイヤーを超える場合、エラーが報告される可能性があります。
+
+#### 6. オブジェクトの移行から完全移行までの間に作成されたテーブルは同期できません。
+ユーザーはスキーマ全体 (db1) を移行することを選択しましたが、オブジェクトの移行と完全な移行の間にテーブル db1.tb1 が作成されました。オブジェクトの移行時には db1.tb1 が存在しないため、オブジェクトの移行では db1.tb1 のテーブル構造は移行されません。そのため、完全な移行中に、テーブル構造が存在しないというエラーが報告されます。
+
+#### 7. その他
+「」
+操作のための違法な照合（UTF8MB4_GENERAL_CI、暗黙的）および（UTF8MB4_0900_AI_CI、暗黙的） '=' MySQL 8.0は、UTF8MB4_CIの照合ルールとしてのUTF8MB4_0900_AI_CIを使用します。ビューがある場合、convert( tt.ID using utf8mb4 ) を使用すると、オブジェクトをターゲットに移行するときにエラーが発生する可能性があります。 不正な照合順序が混在しているため、convert(tt.ID using utf8mb4 ) COLLATE utf8mb4_general_ci にビューを手動で変更することをお勧めします。この問題を回避するには、ターゲット ライブラリを使用します。
+「」
+
+---
+
+### 操作ガイド
+
+#### 1. プラグインのインストール
+
+Chat2DB を開き、左側のツールバーのプラグイン アイコンをクリックし、右側の「インストール/更新」プラグイン ボタンをクリックして、「インストール」をクリックします。
+
+!['プラグイン'](/image/plugins/plugin01.png)
+
+#### 2. プラグインを開きます
+
+「起動」をクリックしてプラグインを開き、プラグインがロードされるまで待ちます。
+
+!['起動'](/image/plugins/plugin02.png)
+
+#### 3. タスクの作成
+
+!['作成'](/image/plugins/plugin03.png)
+
+1. 「名前」フィールドにタスクの名前を入力します。たとえば、task-01qu6D。
+2. 必要に応じて、仮想マシンの仕様を選択します。オプションには、極小、小、中、大があります。デフォルトの選択は「極小」です。
+- 各仕様の説明:
+- Tiny: 2 コアと 4G メモリ、移行用に 1 スレッドを使用する最小の仕様。
+- 小、中、大の仕様により、需要に応じてリソースが増加します。
+
+3. **ソース データベース エンジン**
+
+- ソース データベース エンジンのタイプを選択します。この例では、MySQL が選択されています。
+- サポートされているバージョンには、5.6、5.7、8.0 が含まれます。
+- サポートされているデータベースの種類には、自己構築データベース、ECS 自己構築データベース、クラウド データベースが含まれます。
+
+4. **ターゲット データベース エンジン**
+
+- ターゲットのデータベース エンジンの種類を選択します。この例では、MySQL が選択されています。
+- サポートされているバージョンには、5.6、5.7、8.0 が含まれます。
+- サポートされているデータベースの種類には、自己構築データベース、ECS 自己構築データベース、クラウド データベースが含まれます。
+
+!['作成'](/image/plugins/plugin04.png)
+
+必要な情報をすべて入力したら、ページの右下隅にある「作成」ボタンをクリックして新しいタスクを作成します。
+
+!['作成'](/image/plugins/plugin05.png)
+
+
+#### 4. ソース データベースとターゲット データベースを選択します
+
+1. **データベースの種類**:
+- 「ソース情報」セクションで元のデータベースの種類を選択します。この例では「MySQL」を選択しました。
+- 同様に、「ターゲット情報」セクションで、データの移行先のターゲット データベースの種類を選択します。ここでは同様に「MySQL」を選択します。
+2. **データベース IP:ポート**:
+- 「ソース情報」セクションに元のデータベースの IP アドレスとポート番号を入力します。
+- 「ターゲット情報」セクションには、ターゲット データベースの IP アドレスとポート番号を指定する必要があります。
+3. **アカウントとパスワード**:
+- 「ソース情報」セクションでは、元のデータベースにアクセスするためのユーザー名とパスワードを入力する必要があります。ユーザー名のデフォルトは root です。
+- 「ターゲット情報」セクションでは、ターゲット データベースへのアクセスに使用するユーザー名とパスワードを入力する必要があります。
+- ユーザー名がわからない場合は、以下の「認証スクリプト」操作をクリックして、承認されたユーザーを取得できます。
+4. **SSL 配送**:
+- データベースが SSL 暗号化接続で構成されている場合は、SSL 送信を有効にすることを選択できます。それ以外の場合は、無効のままにしてください。
+5. **接続のテスト**:
+- 必要な情報をすべて入力した後、「接続のテスト」をクリックして、入力した情報が正しいこと、およびデータベースに正常に接続できることを確認できます。
+
+!['test_connection'](/image/plugins/plugin06.png)
+
+#### 5. 移行オプション
+
+1. **オブジェクト**:
+- この領域には一連のデータベース名がリストされます。これらの項目をチェックすることで、どのデータベース テーブル、ビュー、関数、ストアド プロシージャ、トリガーなどを移行プロセスに含めるかを決定できます。
+
+!['移行'](/image/plugins/plugin061.png)
+
+2. **移行**:
+
+**速度**: 移行速度を選択できます。デフォルトは「無制限」です。これは、速度制限がないことを意味します。移行速度を制限する必要がある場合は、ここで変更できます。
+
+- **移行タイプ**: 「オブジェクト」、「データ」、および「増分同期」の 3 つのオプションが提供されます。ニーズに応じて、移行するオブジェクト定義、データ、または増分同期を選択できます。
+- 「オブジェクト」: テーブル、ビューなど、移行されたデータベース内のオブジェクトを表します。
+- `Data`: 移行データベース内のデータを表します。
+- 「増分同期」: 増分同期を示し、最後の移行以降に変更されたコンテンツのみを移行します。
+
+**同期ポリシー**: このセクションでは、同期ポリシーを指定できます。
+
+- **同期トポロジ**: 一方向または双方向の同期を選択できます。
+- `unidirection`: 一方向の同期。データはソース データベースからのみ送信されます ターゲットデータベースへの流れ。
+- 「双方向」: 双方向同期。データは 2 つのデータベース間を流れることができます。
+- **競合ポリシー**: 競合が発生した場合の競合の処理方法。
+- 「カバーして続行」: 既存のデータを上書きして移行を続行します。
+- 「無視して続行」: 競合を無視して移行を続行します。
+- 「エラーを報告して停止」: エラーを報告して移行を停止します。
+- **DDL のフィルター**: データ定義言語 (DDL) ステートメントをフィルターで除外するかどうか。 DDL は、データベース構造の作成、変更、削除によく使用されます。
+
+3. **移行オブジェクト構成ファイルのアップロード** / **テンプレート ファイルのダウンロード**:
+- 移行オブジェクトの設定ファイルを準備している場合は、「移行オブジェクト設定ファイルのアップロード」をクリックしてアップロードできます。
+- 手動編集用にテンプレート ファイルをダウンロードする必要がある場合は、[テンプレート ファイルをダウンロード] をクリックします。
+
+!['移行'](/image/plugins/plugin07.png)
+
+4. **高度な構成**:
+- このリンクをクリックして、より詳細な構成ページに入り、移行タスクの高度なカスタマイズを実行します。
+
+!['移行'](/image/plugins/plugin08.png)
+!['移行'](/image/plugins/plugin09.png)
+
+5. **確認情報**:
+- 必要な情報をすべて入力したら、「次へ」をクリックして次のステップに進みます。
+
+データベースの移行を実行する前に、すべてのオプション、特に競合ポリシーと同期ポリシーを注意深く確認してください。これらのオプションは移行の結果に直接影響を与える可能性があります。
+
+#### 6. マッピングとフィルタリング
+
+!['マッピング'](/image/plugins/plugin10.png)
+
+- フィールド マッピングとは、2 つのテーブル間のデータ交換またはデータ同期のために、あるテーブルのフィールドを別のテーブルのフィールドにマッピングすることを指します。
+MySQL データベース移行タスクの構成プロセス中に、ユーザーはターゲット ライブラリ内のライブラリ、テーブル、およびフィールドのオブジェクト マッピング名を設定できます。
+以下の図に示すように、[テキストは濃い緑色で表示され、-sy サフィックスが追加されています] には、変更後の対象スキーマ、テーブル、およびフィールドのマッピング名が表示されます。
+
+注: 変更されたマッピング名は英語の文字で始まる必要があります。長さは、英語の文字 (大文字と小文字が区別される)、数字、およびアンダースコアの組み合わせのみが許可されます。
+
+!['マッピング'](/image/plugins/plugin11.png)
+
+!['マッピング'](/image/plugins/plugin12.png)
+
+移行が完了したら、ターゲット ライブラリに入り、ライブラリ、テーブル、フィールドがすべて、移行プロセス中に設定したマッピング名で表示されていることを確認します。
+
+!['マッピング'](/image/plugins/plugin13.png)
+
+- データ移行またはデータ複製において、移行またはコピーが必要なデータをフィルタリングして除外するために使用でき、不必要なデータの送信と処理を回避し、移行またはコピーの効率を向上させることができます。
+次の図に示すように、MySQL データベース移行タスクの構成プロセス中に、[マッピングとフィルタリング] をクリックして、データ フィルタリング条件を自由に構成できるようにします。テキスト ボックスにフィルタリング条件を入力した後、テキスト ボックスの外に移動します。フィルタリング効果はフィルタリング結果のプレビューで確認できるため、ユーザーは期待どおりかどうかを確認できます。
+
+!['マッピング'](/image/plugins/plugin14.png)
+
+テーブルのフィルタリング条件を設定すると、そのフィルタリング条件は完全同期プロセスおよび増分同期プロセス中に自動的に組み込まれます。フィルタリングされたデータがターゲット側に同期されることが保証されます。
+ここで設定した where フィルター条件は `CategoryId > 9` で、フィルター結果は次のようになります。
+- ソースデータの表示:
+
+!['マッピング'](/image/plugins/plugin15.png)
+
+- 対象データ表示：
+
+!['マッピング'](/image/plugins/plugin16.png)
+
+ターゲット ライブラリは、「CategoryId > 9」のデータのみを同期しました。これはターゲットの期待と一致しています。
+
+#### 7. 最終確認
+
+- 移行先データベースに存在する同名のオブジェクトは再構築されますので、データの上書きや破損を避けるため、移行前に移行先データベースをよく確認してください。データ更新や DDL 変更の影響を軽減するために、オフピーク時間にデータ移行を実行することをお勧めします。
+
+- 確認フェーズでは、ユーザーはプロンプト情報を確認し、データベースのバージョンの不一致によって引き起こされる可能性のある移行の失敗など、潜在的な問題やリスクを理解する必要があります。
+同時に、事前チェックの結果を表示することもできます。エラーや警告がある場合は、移行を実行する前にこれらの問題を解決する必要があります。すべてが正常であれば、ユーザーは「タスクを保存して実行」をクリックして移行タスクを保存して実行するか、「タスクの保存」をクリックして関連する構成情報を一時的に保存できます。
+
+!['確認'](/image/plugins/plugin17.png)
+
+#### 8. 移行結果
+
+- 移行が完了すると、ユーザーは移行の進行状況、ステータス、エラー メッセージなどを含む移行結果を表示できます。
+
+!['結果'](/image/plugins/plugin18.png)
+
+!['結果'](/image/plugins/plugin19.png)

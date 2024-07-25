@@ -2,11 +2,9 @@
 
 ### 基本介绍
 
-
 数据传输服务DBMotion是一款轻量、绿色的数据库**迁移**、**同步**、**校验工具**。支持国产化数据迁移、支持容灾演练、支持两地三中心和异地多活；源库无感知、简单易集成、丝滑高性能。助您在多云之间随心迁移、自由容灾。
 
 ### 功能介绍
-
 
 #### 已支持的数据库
 
@@ -16,27 +14,27 @@
 
 #### 待支持的数据库
 
-下面是已经实现支持，待集成进`DBMotion插件`的数据库类型
+**下面是已经实现支持，待集成进`DBMotion插件`的数据库类型**
 
-`PostgreSQL to PostgreSQL` 的对象迁移， 全量数据迁移，增量同步（暂不支持DDL和双向同步)。  目前支持 9.6 以上版本的同版本迁移或向高版本迁移。
+**`PostgreSQL to PostgreSQL`** 的对象迁移， 全量数据迁移，增量同步（暂不支持DDL和双向同步)。  目前支持 9.6 以上版本的同版本迁移或向高版本迁移。
 
-`MySQL to Clickhouse` 的对象迁移、全量数据迁移、增量同步；支持 MySQL 5.6、5.7、8.0 到 Clickhouse 22 以后的版本。
+**`MySQL to Clickhouse`** 的对象迁移、全量数据迁移、增量同步；支持 MySQL 5.6、5.7、8.0 到 Clickhouse 22 以后的版本。
 
-`MongoDB to MongoDB` 的对象迁移、全量数据迁移、增量同步；目前支持 MongoDB 3.6 以上版本的同版本迁移或向高版本迁移。  
+**`MongoDB to MongoDB`** 的对象迁移、全量数据迁移、增量同步；目前支持 MongoDB 3.6 以上版本的同版本迁移或向高版本迁移。
 
-`openGauss to openGauss` 的对象迁移、全量数据迁移、增量同步；支持 5.0.0 以上版本的单向和双向同步。
+**`openGauss to openGauss`** 的对象迁移、全量数据迁移、增量同步；支持 5.0.0 以上版本的单向和双向同步。
 
-`GaussDB to GaussDB` 的对象迁移、全量数据迁移、增量同步；支持 503.1 以上版本的同版本迁移或向高版本迁移。   
+**`GaussDB to GaussDB`** 的对象迁移、全量数据迁移、增量同步；支持 503.1 以上版本的同版本迁移或向高版本迁移。
 
-`Oracle to GaussDB` 的全量数据迁移和增量同步。
+**`Oracle to GaussDB`** 的全量数据迁移和增量同步。
 
-`SQL Server to SQL Server` 的对象迁移、全量数据迁移；目前支持 2017/2019 同版本的相互迁移。
+**`SQL Server to SQL Server`** 的对象迁移、全量数据迁移；目前支持 2017/2019 同版本的相互迁移。
 
-`Redis to Redis` 的全量数据迁移和增量同步；目前支持 5.0 及以上版本的同版本迁移或向高版本迁移。
+**`Redis to Redis`** 的全量数据迁移和增量同步；目前支持 5.0 及以上版本的同版本迁移或向高版本迁移。
 
-`MySQL to Kafka` 的全量数据迁移。
+**`MySQL to Kafka`** 的全量数据迁移。
 
-`PostgreSQL/GaussDB/openGauss to Kafka` 的全量数据迁移，增量订阅。
+**`PostgreSQL/GaussDB/openGauss to Kafka`** 的全量数据迁移，增量订阅。
 
 ---
 
@@ -121,3 +119,162 @@ DBMotion目前会处理对象依赖层数在10层以内的。也就是说view v1
 Illegal mix of collations (utf8mb4_general_ci,IMPLICIT) and (utf8mb4_0900_ai_ci,IMPLICIT) for operation '=' MySQL 8.0默认使用utf8mb4_0900_ai_ci的Collation作为utf8mb4的校对规则，跟5.6和5.7的utf8mb4_general_ci默认值不一样，如果有view使用convert(tt.ID using utf8mb4 )可能会出现对象迁移时迁移到目标端报错，Illegal mix of collations，建议手工在目标库将view改成convert(tt.ID using utf8mb4 ) COLLATE utf8mb4_general_ci以绕过这个问题。
 ```
 
+---
+
+### 操作指南
+
+#### 1. 插件安装
+
+打开Chat2DB，点击左侧工具栏的插件图标，点击右侧的`安装/更新`插件按钮，点击安装即可。
+
+!['plugins'](/image/plugins/plugin01.png)
+
+#### 2. 打开插件
+
+点击`Launch`打开插件，等待插件加载完成即可。
+
+!['launch'](/image/plugins/plugin02.png)
+
+#### 3. 创建任务
+
+!['create'](/image/plugins/plugin03.png)
+
+1. 在`Name`字段中输入任务的名称。例如，task-01qu6D。
+2. 根据需要选择虚拟机的规格。选项包括：Tiny，Small，Medium，Large。默认选择的是Tiny。
+- 每个规格的说明：
+- Tiny：最小规格，使用2核4G内存，1线程用于迁移。
+- Small、Medium和Large规格根据需求增加资源。
+
+3. **源数据库引擎 (Source database engine)**
+
+- 选择源数据库引擎类型。在此例中，选择的是MySQL。
+- 支持的版本包括：5.6、5.7、8.0。
+- 支持的数据库类型包括：自建数据库、ECS自建数据库和云数据库。
+
+4. **目标数据库引擎 (Target database engine)**
+
+- 选择目标数据库引擎类型。在此例中，选择的是MySQL。
+- 支持的版本包括：5.6、5.7、8.0。
+- 支持的数据库类型包括：自建数据库、ECS自建数据库和云数据库。
+
+!['create'](/image/plugins/plugin04.png)
+
+在填写完所有必要的信息后，点击页面右下角的`Create`按钮，即可创建新任务。
+
+!['create'](/image/plugins/plugin05.png)
+
+
+#### 4. 选择源和目标数据库
+
+1. **数据库类型**：
+- 在`Source information`（源信息）部分选择你的原始数据库类型。在这个例子中，我们选择了"MySQL"。
+- 同样，在`Target information`（目标信息）部分选择你想要将数据迁移到的目标数据库类型。同样，这里也选择了"MySQL"。
+2. **数据库IP:端口**：
+- 在`Source information`部分输入你的原始数据库的IP地址和端口号。
+- 对于`Target information`部分，你需要提供目标数据库的IP地址和端口号。
+3. **账户与密码**：
+- `Source information`部分需要你提供访问原始数据库的用户名和密码。用户名默认是root。
+- `Target information`部分则需要你提供用于访问目标数据库的用户名和密码。
+- 如果你不知道用户名，可以点击下方`Auth script`操作，获取授权用户。
+4. **SSL运输**：
+- 如果你的数据库配置了SSL加密连接，则可以选择启用SSL传输。否则，请保持禁用状态。
+5. **测试连接**：
+- 输入所有必要的信息后，你可以点击`Test connection`来验证你提供的信息是否正确，并且能够成功地连接到你的数据库。
+
+!['test_connection'](/image/plugins/plugin06.png)
+
+#### 5. 迁移选项
+
+1. **Objects**:
+- 这一区域将会列出一系列的数据库名称。你可以通过勾选这些项目来决定哪些数据库表、视图、函数、存储过程、触发器等应该被包含在迁移过程中。
+
+!['Migration'](/image/plugins/plugin061.png)
+
+2. **Migration**:
+
+**Speed**: 这里提供了迁移速度的选择，默认为`Unlimited`，即不限速。如果需要限制迁移的速度，可以在此处更改。
+
+- **Migrate type**: 提供了三种选项——`Objects`, `Data`, 和 `Sync incremental`。根据需求，你可以选择要迁移的对象定义、数据或者增量同步。
+- `Objects`: 表示迁移数据库中的对象，比如表、视图等。
+- `Data`: 表示迁移数据库中的数据。
+- `Sync incremental`: 表示进行增量同步，只迁移自上次迁移以来发生改变的内容。
+
+**Sync policy**: 这一部分允许你指定同步策略。
+
+- **Sync topology**: 可以选择单向或双向同步。
+- `unidirectional`: 单向同步，数据只会从源数据库流向目标数据库。
+- `Bidirectional`: 双向同步，数据可以在两个数据库之间相互流动。
+- **Conflict policy**: 当冲突出现时的处理方式。
+- `Cover and continue`: 覆盖已有数据并继续迁移。
+- `Ignore and continue`: 忽略冲突并继续迁移。
+- `Report an error and stop`: 报错并停止迁移。
+- **Filter DDL**: 是否过滤掉数据定义语言（DDL）语句。DDL通常用来创建、修改或删除数据库结构。
+
+3. **Upload migrate object configuration file** / **Download template file**:
+- 如果你已经准备好了迁移对象的配置文件，可以通过点击"Upload migrate object configuration file"上传它。
+- 如果需要下载模板文件以便手动编辑，可以点击"Download template file"。
+
+!['Migration'](/image/plugins/plugin07.png)
+
+4. **Advanced configuration**:
+- 点击此链接可以进入更详细的配置页面，对迁移任务进行高级定制。
+
+!['Migration'](/image/plugins/plugin08.png)
+!['Migration'](/image/plugins/plugin09.png)
+
+5. **确认信息**:
+- 填写完所有必要的信息后，你可以点击`Next`前进至下一步。
+
+在执行数据库迁移前，确保已仔细检查所有的选项，特别是冲突政策和同步策略，因为它们可能会直接影响到迁移的结果。
+
+#### 6. 映射和过滤
+
+!['mapping'](/image/plugins/plugin10.png)
+
+- 字段映射是指将一个表中的字段映射到另一个表中的字段，以便在两个表之间进行数据交换或数据同步。
+在MySQL数据库迁移任务配置过程中，用户可以设置库、表、字段在目标库的对象映射名。
+如下图所示，【文字显示墨绿色，加了-sy后缀】的为修改后目标端Schema、表、字段的映射名显示。
+
+注意：修改后的映射名请以英文字母开头，仅允许英文字母（区分大小写）、数字、下划线组合，长度小于等于64
+
+!['mapping'](/image/plugins/plugin11.png)
+
+!['mapping'](/image/plugins/plugin12.png)
+
+迁移完成后，我们进入目标库查看，可以看到库，表，字段均显示为迁移过程中我们设置的映射名。
+
+!['mapping'](/image/plugins/plugin13.png)
+
+- 在数据迁移或数据复制中，where可以用来过滤出需要迁移或复制的数据，避免不必要的数据传输和处理，提高迁移或复制效率。
+如下图，在MySQL数据库迁移任务配置过程中，点击映射与过滤，支持自由配置数据过滤条件，在文本框输入过滤条件后，移出文本框，在过滤结果预览中就可以查看到过滤效果，以便用户确认是否满足预期。
+
+!['mapping'](/image/plugins/plugin14.png)
+
+设置好表的过滤条件后，在全量和增量同步过程中就会自动带上过滤条件。保证过滤后的数据才会同步到目标端。
+此处我们设置的where过滤条件为：`CategoryId > 9`，过滤结果如下。
+- 源端数据展示：
+
+!['mapping'](/image/plugins/plugin15.png)
+
+- 目标端数据展示：
+
+!['mapping'](/image/plugins/plugin16.png)
+
+目标库只同步到了`CategoryId > 9`的数据，符合目标预期。
+
+#### 7. 最后确认
+
+- 目标数据库中存在相同名字的对象将会被重建，所以在迁移前请仔细检查目标数据库以避免覆盖和损坏数据。建议在非高峰时段进行数据迁移，以减少数据更新和DDL变更的影响。
+
+- 在确认阶段，用户需要查看提示信息，理解潜在的问题和风险，如数据库版本不一致可能导致的迁移失败。
+同时，他们也可以查看预检查结果，如果有错误或警告，应解决这些问题后再执行迁移。如果一切正常，用户可以点击`Save task and execute`来保存并执行迁移任务或者点击`Save task`来暂时保存相关配置信息。
+
+!['confirm'](/image/plugins/plugin17.png)
+
+#### 8. 迁移结果
+
+- 迁移完成时，用户可以查看迁移结果，包括迁移的进度、状态、错误信息等。
+
+!['result'](/image/plugins/plugin18.png)
+
+!['result'](/image/plugins/plugin19.png)
