@@ -1,0 +1,152 @@
+# Chat2DB Source code deployment and Docker deployment
+
+This project supports source code compilation deployment and Docker deployment. For simplicity, we recommend Docker deployment first!
+
+# Docker deployment
+## Command line operation:
+
+1. Pull chat2db image
+
+!['image'](/image/questions/deployment01.png)
+
+2. Check the image and you can see that the pull is successful.
+
+!['image'](/image/questions/deployment02.png)
+
+3. Start the chat2db image, change the name (chat2db) and port number (10824), and use `docker ps` to see the running container after the startup is successful.
+
+Command: _**docker run -itd chat2db/chat2db:latest -p 10824:10824 --name chat2db**_
+
+!['image'](/image/questions/deployment03.png)
+
+4. Open the web page and enter `localhost:10824` successfully!
+
+!['image'](/image/questions/deployment04.png)
+
+## Client Docker deployment (visual operation on the client):
+
+1. Open the docker client, search for `chat2db` in the app store, select the first 10K+ downloads, the latest version and `pull` the image
+
+!['image'](/image/questions/deployment05.png)
+
+!['image'](/image/questions/deployment06.png)
+
+2. Click `Images` on the left to enter the image interface and start the image
+
+!['image'](/image/questions/deployment07.png)
+
+!['image'](/image/questions/deployment08.png)
+
+3. After starting the image, a window will pop up. Set the image parameters according to the figure below
+
+!['image'](/image/questions/deployment09.png)
+
+4. After the startup is complete, click `Contains` on the left to enter the container interface and check the container running status
+
+!['image'](/image/questions/deployment10.png)
+
+!['image'](/image/questions/deployment11.png)
+
+5. Open the web page and enter `localhost:10824` Success!
+
+!['image'](/image/questions/deployment12.png)
+
+# Source code deployment
+## Running environment
+
+!['image'](/image/questions/deployment13.png)
+
+_**Note**_: This project must be supported by Open JDK17 and above (not Oracle JDK), and the Node version must be 16 and above.
+
+### Front-end deployment (this deployment is implemented by IDEA by default)
+1. **Enter the directory**: First enter the `chat2db-client` directory of the project:
+
+!['image'](/image/questions/deployment14.png)
+
+2. **Compile the project**: Then run the `yarn` command to compile the front-end project and wait patiently
+
+!['image'](/image/questions/deployment15.png)
+
+3. **Start the project**: Use `yarn run start:web` to open the project.
+
+!['image'](/image/questions/deployment16.png)
+
+When the port shown in the figure below appears, it means that the startup is successful!
+
+!['image'](/image/questions/deployment17.png)
+
+### Backend deployment
+1. **Enter the directory**: First enter the chat2db-server directory of the project
+
+!['image'](/image/questions/deployment18.png)
+
+2. **Clean and compile**: Clean and compile the code, skip the test run
+
+Command: _mvn clean install -DskipTests_
+
+!['image'](/image/questions/deployment19.png)
+
+3. **Enter the target directory**:
+
+Command: _cd chat2db-server-start/target_
+
+!['image'](/image/questions/deployment20.png)
+
+4. **Start the program**: Start the Java backend program (this deployment is implemented by IDEA by default), start it directly in the startup class of IDEA
+
+!['image'](/image/questions/deployment21.png)
+
+After completing the above steps, you can see that the web page has been successfully opened! The web page startup port is 8000.
+
+!['image'](/image/questions/deployment22.png)
+
+---
+
+**Problems you may encounter:**
+
+_**Windows:**_
+
+Problem 1: Error when preparing to start the project with yarn:
+
+> yarn: Unable to load file
+> C:\Users\AppData\Roaming\npm\yarn.ps1 because running scripts is prohibited on this system. For more information, see
+> about_Execution_Policies in
+> https:/go.microsoft. com/fwlink/?LinkID=135170. Location Line: 1 Character: 1
+
+**Solution**: Open the Windows PowerShell command window and use the command to find that Windows automatically prohibits running scripts (first line), and allows this system to run scripts (second line)
+
+```bash
+Get-ExecutionPolicy
+Set-ExecutionPolicy RemoteSigned
+```
+
+Problem 2: Yarn reports the following error during installation:
+
+> Yarn: The term "yarn" cannot be recognized as the name of a
+> cmdlet, function, script file, or executable program. Please check the spelling of the name, and if the path is included, make sure the path is correct and try again. Location Line: 1 Character: 1
+
+**Solution**: First check the version of node, then download yarn.
+
+```bash
+PS E:\Chat2DB\chat2db-client> node --version (check if node meets the project running requirements)
+PS E:\Chat2DB\chat2db-client> npm i -g yarn (download and install yarn)
+```
+
+---
+
+_**Mac：**_
+
+Problem 3: Error during execution of mvn clean install -DskipTests:
+
+```bash
+Failed to execute goal org.apache.maven.plugins:maven-compiler-plugin:3.11.0:compile (default-compile) on project chat2db-server-tools-base: Fatal error compiling: java.lang.NoSuchFieldError: Class co
+```
+
+**Solution**:
+1. Check if there is a problem with the project's Maven configuration and make sure the JDK version you use is compatible with Maven Project compatibility:
+
+!['image'](/image/questions/deployment23.png)
+
+2. Check and set JAVA_HOME, make sure your system is configured with the correct JAVA_HOME environment variable, and that the variable points to a compatible JDK version, and configure the following content to ~/.zshrc
+
+!['image'](/image/questions/deployment24.png)
