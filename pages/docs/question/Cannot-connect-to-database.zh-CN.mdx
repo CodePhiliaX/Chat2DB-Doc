@@ -1,0 +1,132 @@
+# 无法连接到数据库
+
+> 如果您对 Chat2DB 完全陌生，请阅读[快速入门](https://docs.chat2db.ai/docs/start-guide/getting-started)指南，其中快速概述了使用 Chat2DB 的第一步。
+
+## 步骤1. 检查您的网络设置
+
+数据库可以在本地或云端工作。对于服务器和云数据库，您需要网络连接。要验证连接是否可用，请使用**ping**和**telnet**命令。
+
+### 1. 使用 ping 命令
+
+`ping` 命令用于测试与另一台计算机之间的网络连通性。它发送一个小的数据包到目标主机，并等待回复。如果收到了回复，则说明网络连接是正常的。
+
+#### Windows:
+
+```cmd
+ping [选项] 目标名称
+```
+
+- `ping` 后面跟的是你想测试的主机名或 IP 地址。
+- 可以添加一些选项，例如 `-t` 表示连续不断地发送 ping 包，直到你按下 `Ctrl+C` 才停止；`-n` 后跟数字表示发送的次数；`-l` 后跟数字表示数据包的大小；`-a`是将地址解析为主机名的命令选项（如果可能）。
+
+#### Linux / macOS:
+
+```bash
+ping [选项] 目标名称
+```
+
+- 用法与 Windows 类似。
+
+### 示例:
+```bash
+ping 192.168.1.1
+```
+!["ping"](/image/questions/ping.png)
+
+
+### 2. 使用 telnet 命令
+
+`telnet` 命令用于测试端口是否开放。你可以使用它来检查特定的服务（如数据库服务）是否正在监听某个端口。
+
+#### Windows:
+
+```cmd
+telnet [主机] [端口]
+```
+
+- `telnet` 后面跟的是你想测试的主机名或 IP 地址，然后是一个空格，接着是端口号。
+
+#### Linux / macOS:
+
+```bash
+telnet [主机] [端口]
+```
+
+- 用法与 Windows 类似。
+
+### 示例: 这个例子尝试连接到 IP 地址为 `192.168.1.1` 的主机上的 MySQL 数据库服务，默认端口为 `3306`。
+
+```bash
+telnet 192.168.1.1 3306
+```
+
+> 出于安全原因，DBMS 通常会丢弃所有 telnet 连接。 telnet 命令允许您检查端口是否打开用于通信。
+
+### 注意事项:
+- 如果你是在 Windows 10 上使用 `telnet`，可能需要先启用 Telnet 客户端功能。可以通过在 PowerShell 中运行 `Get-WindowsCapability -Online | Where-Object {$_.Name -like "Telnet*"} | Add-WindowsCapability` 来启用它。
+- 如果 `telnet` 命令成功连接到了服务，你通常会看到一些欢迎信息或者提示符。如果无法连接，可能会收到错误消息或没有响应。
+- 许多现代系统默认不安装 `telnet`，因为它的安全性较低。你可以使用 `nc`（netcat）或其他安全工具作为替代。
+
+## 步骤2. 检查您的连接属性
+
+每个数据库（MySQL、PostgreSQL、Oracle 或任何其他供应商）都有自己的连接设置。大多数数据库都包含连接设置：
+
+- **主机**：计算机或存储数据库的其他设备的主机名。它可以是 IP 地址**127.0.0.1**或域名**localhost** 。
+- **数据库**：您要连接的数据库的名称。您可以在数据库服务器的设置中找到数据库名称，也可以询问数据库管理员。在某些情况下，可以在数据库命令行中运行查询来查看所有可用数据库的名称。例如，在 MySQL 中，您可以运行`SHOW DATABASES;` 。
+
+!["show databases"](/image/questions/show.png)
+
+- **用户**：具有足够权限对数据库执行操作的用户名。在数据库命令行中运行查询以查看所有可用数据库的名称。例如，在 MySQL 中，您可以运行`SHOW GRANTS;` 。
+- **密码**：用户的密码。
+- **端口**：标识主机之间连接点的数字。主机使用端口号来确定必须与哪个应用程序、服务或进程建立连接。不同的数据库供应商为其数据库使用不同的端口。以下列表是部分默认端口号的列表:
+
+| 数据库        | 默认端口号 |
+|:------------:|:--------:|
+| MySQL        | 3306     |
+| PostgreSQL   | 5432     |
+| Oracle       | 1521     |
+| SQL Server   | 1433     |
+| MongoDB      | 27017    |
+| Redis        | 6379     |
+| KingBase     | 54321    |
+| MariaDB      | 3306     |
+| SQLite       | none     |
+| ClickHouse   | 9000     |
+| DM           | 5236     |
+| OceanBase    | 2883     |
+
+> 您的系统上的实际端口号可能有所不同。与数据库管理员、服务器设置或托管提供商验证您使用的端口号是否正确。
+
+## 步骤3. 检查驱动版本
+
+通过 JDBC 驱动程序，您可以与 Chat2DB 中的数据库管理系统 (DBMS) 进行交互。每个 DBMS 都需要自己的 JDBC 驱动程序。确保驱动程序版本和 DBMS 版本相互兼容。
+
+您可以从 Chat2DB 下载所有受支持供应商的驱动程序。您可以在驱动程序列表中查看受支持供应商的列表;
+或者，您可以将自己的驱动程序上传到 Chat2DB。
+
+## 步骤4. 检查是否需要 SSH 连接
+
+为了使与数据库的连接更加安全，某些服务需要使用 SSH 。
+
+**Secure Shell** 或 **SSH** 是一种网络协议，用于加密客户端和服务器之间的连接。
+
+在 Chat2DB 中，您可以通过使用 `Chat2DB SSH` 隧道来创建 SSH 隧道。 Chat2DB 将使用您设置的 SSH 配置创建 SSH 隧道。
+
+!["ssh"](/image/connection/ssh.png)
+
+- `USE SSH`：是否使用 SSH 通道
+- `SSH Host`：SSH 服务器地址
+- `SSH Port`：SSH 服务器端口 默认 22
+- `Authentication`：SSH 认证方式，用户名密码或者私钥
+- `User`：SSH 用户名
+- `Password`：SSH 密码
+- `Test the SSH connection`：测试 SSH 连接是否正常
+
+## 步骤5. 如果您仍需要帮助，请写信给我们
+
+联系Chat2DB团队，描述您的问题，并附上所有可以加快故障排除速度的可用材料（代码示例、屏幕截图、日志、动画、视频和其他材料）。我们将尽快回复您：
+
+- 邮箱：[Chat2DB@ch2db.com](Chat2DB@ch2db.com)
+- GitHub：[https://github.com/chat2db/Chat2DB/issues](https://github.com/chat2db/Chat2DB/issues)
+
+
