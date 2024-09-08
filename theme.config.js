@@ -16,7 +16,7 @@ export default {
   ),
   logoLink: "https://chat2db.ai",
   project: {
-    link: "https://github.com/chat2db/chat2db",
+    link: "https://github.com/codePhiliaX/chat2db",
   },
   chat: {
     link: "https://discord.gg/uNjb3n5JVN",
@@ -61,8 +61,8 @@ export default {
     text,
   })),
   // feedback: false,
-  docsRepositoryBase: "https://github.com/chat2db/chat2db-doc/tree/main/docs",
+  docsRepositoryBase: "https://github.com/codePhiliaX/chat2db-doc/tree/main/docs",
   // feedback:
-  //   "https://github.com/chat2db/chat2db-doc/issues/new?title=Feedback%20for%20%E2%80%9CChangelog%E2%80%9D&labels=feedback",
+  //   "https://github.com/codePhiliaX/chat2db-doc/issues/new?title=Feedback%20for%20%E2%80%9CChangelog%E2%80%9D&labels=feedback",
   editLink: false,
 };
