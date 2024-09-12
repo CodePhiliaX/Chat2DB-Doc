@@ -1,0 +1,194 @@
+---
+image: ""
+description: "本文将深入探讨数据库中 DROP、DELETE 和 TRUNCATE 操作之间的主要区别。"
+date: September 12, 2024
+---
+
+# SQL 中 Drop、Delete 与 Truncate 的区别
+
+## 前言
+
+在数据库操作中，我们通常通过 SQL 语句与数据库进行交互。虽然市面上有许多数据库图形化工具可以辅助操作，但归根结底，这些工具的本质是将用户的操作转化为 SQL 语句与数据库通信。因此，优秀的数据库管理工具无论多么智能，其核心仍然是 SQL。
+
+目前市面上有许多优秀的数据库图形化工具，主要有以下几款：
+
+- **DataGrip**：由 JetBrains 公司开发，是开发者中广为人知的数据库管理工具，功能强大且支持多种数据库。
+- **DBeaver**：一款开源的数据库管理工具，虽然相对 DataGrip 知名度稍低，但在开发者社区中也广受欢迎，特别是在支持多种数据库方面表现出色。
+- **Navicat**：作为拥有 20 多年历史的老牌数据库管理工具，Navicat 在国内市场享有很高的知名度，支持多种数据库并且功能丰富。
+- **Chat2DB**：由前阿里巴巴员工、EasyExcel 作者创立的一款新兴产品，虽然相对年轻，但其与 AI 的深度结合极大地提高了操作效率，正在迅速成长中。
+
+尽管有许多优秀的数据库客户端工具，我们作为开发者依然需要熟练掌握 SQL 语句的知识，才能更好地理解数据库的运行机制。因此，今天我们来深入探讨一下 `DROP`、`DELETE` 和 `TRUNCATE` 这三种操作的区别。
+
+## 省流版
+
+| 操作     | SQL 类型            | 作用                       | 是否保留表结构 | 支持事务回滚 | 执行速度       | 使用场景                             |
+| -------- | ------------------- | -------------------------- | -------------- | ------------ | -------------- | ------------------------------------ |
+| DROP     | DDL（数据定义语言） | 删除整个表或其他数据库对象 | 否             | 否           | 最快           | 完全移除表及其数据，不再需要时使用   |
+| DELETE   | DML（数据操作语言） | 删除表中的特定记录         | 是             | 是           | 慢（逐行删除） | 删除部分或全部记录，保留表结构时使用 |
+| TRUNCATE | DDL（数据定义语言） | 快速删除表中的所有记录     | 是             | 否           | 较快           | 清空表数据但保留表结构时使用         |
+
+## SQL 类型
+
+首先，我们从 SQL 的类型来区分 `DROP`、`DELETE` 和 `TRUNCATE` 这三种操作：
+
+1. **DROP**
+   1. **SQL** **类型**：`DROP` 是一种 **DDL****（****Data Definition Language****，数据定义语言）** 操作。
+   2. **语法格式：**`DROP TABLE table_name;`
+   3. **作用**：用于删除数据库中的整个表、视图、索引或其他数据库对象。一旦执行 `DROP` 操作，删除的对象将无法恢复，表结构和数据都会被完全移除。
+2. **DELETE**
+   1. **SQL** **类型**：`DELETE` 是一种 **DML****（****Data Manipulation Language****，数据操作语言）** 操作。
+   2. **语法格式：**`DELETE FROM table_name WHERE condition;`
+   3. **作用**：用于删除表中的特定记录（行），但表结构和索引保留。`DELETE` 可以通过 `WHERE` 子句指定删除的条件，删除的记录也可以通过事务回滚（如果数据库支持事务）恢复。
+3. **TRUNCATE**
+   1. **SQL 类型**：`TRUNCATE` 也是一种 **DDL 操作**，尽管它主要用于数据操作。
+   2. **语法格式：**`TRUNCATE TABLE table_name;`
+   3. **作用**：用于快速删除表中的所有记录，保留表结构和索引。与 `DELETE` 不同，`TRUNCATE` 操作无法通过 `WHERE` 子句筛选记录，也不支持事务回滚。`TRUNCATE` 通常比 `DELETE` 更快，因为它不会逐行删除记录，而是直接释放表中的数据空间。
+
+不想看文字的朋友，也可以直接看如下关于 `DROP`、`DELETE` 和 `TRUNCATE` 操作的对比表格：
+
+## 性能对比
+
+### 1. DROP——>最快
+
+**`DROP`** 操作会从数据库的元数据中彻底移除整个表的定义，包括表结构、数据、索引以及触发器等所有信息。不需要逐行处理，因此速度非常快。适用于不再需要该表时的彻底删除操作。
+
+执行 `DROP` 时，数据库会对表进行锁定，并确保所有相关的外键约束得到处理或解除。若存在依赖于该表的其他对象（如视图或存储过程），则需要先解决这些依赖问题，否则数据库将抛出错误。`DROP` 操作是不可逆的，意味着表及其所有关联数据将被永久删除。
+
+![Time Consumption of Drop Operations](/image/blog/differences-1-cn.png)
+
+### 2. DELETE——>最慢
+
+`DELETE` 操作会在目标表中逐行扫描，并依据 `WHERE` 子句中的条件来决定哪些行应被删除；在删除每行数据时，数据库会记录这些操作以便支持事务回滚。此外，如果表上配置了触发器（如 `BEFORE DELETE` 或 `AFTER DELETE` 触发器），则在删除操作发生时会触发这些触发器。
+
+这种逐行处理方式，尤其是在有复杂 `WHERE` 条件时，需要检查每一行数据是否满足条件，使得 `DELETE` 成为三者中最慢的操作。如果表中有很多记录或条件语句较复杂，性能会进一步受到影响。但好处是，`DELETE` 操作提供了更高的灵活性，允许通过条件语句精确删除特定数据。
+
+![Time Consumption of DELETE Operations](/image/blog/differences-2-cn.png)
+
+### 3. TRUNCATE——>较快
+
+`TRUNCATE` 操作通过直接释放表中的数据空间来删除所有记录，不用逐行处理数据，且不会触发行级别的触发器，因此比 `DELETE` 快得多。同时表的结构和索引仍然保留，会比**`DROP`** 操作稍慢。
+
+另外，由于它是 DDL 操作，会自动提交事务，不能回滚，执行 `TRUNCATE` 后，表中的计数器（如 `AUTO_INCREMENT`）通常也会被重置。
+
+![Time Consumption of TRUNCATE Operations](/image/blog/differences-3-cn.png)
+
+## 小结
+
+我们可以看到，执行起来的速度差距是显而易见的，最快的无疑是`DROP`操作，其次是`TRUNCATE`操作，最慢的则是`DELETE`操作。
+
+# 深入探讨`DELETE`操作和`TRUNCATE`操作
+
+### 触发器的角度
+
+#### `DELETE`操作
+
+![delete trigger](/image/blog/differences-4-cn.png)
+
+我们可以创建一个触发器来记录删除行为，看看是不是`DELETE`操作会触发我们的触发器。
+
+经过测试，我们会发现，`delete_log` 这张表中，确实插入了非常多的删除日志。说明`DELETE`操作会触发该表上相关联的记录删除操作的触发器。
+
+![delete_log](/image/blog/differences-5-cn.png)
+
+#### `TRUNCATE`操作
+
+但是，如果我们通过`TRUNCATE`操作会发现`delete_log`这张表中其实是没有插入日志的，证实`TRUNCATE`操作不会触发触发该表上相关联的记录删除操作的触发器。
+
+![truncate trigger](/image/blog/differences-6-cn.png)
+
+### 事务的角度
+
+#### `DELETE`操作
+
+```SQL
+-- 查询该表当前的总记录函数
+SELECT 
+  count(*) 
+FROM 
+  example_data_copy_0902144250 
+  ;
+
+SET
+  autocommit = 0;
+
+delete from example_data_copy_0902144250;
+
+-- 执行删除后，但事务为回滚，查询该表的总记录数
+SELECT 
+  count(*) 
+FROM 
+  example_data_copy_0902144250 
+  ;
+
+rollback;
+
+-- 查询事务回滚后，查询该表的总记录数
+SELECT 
+  count(*) 
+FROM 
+  example_data_copy_0902144250 
+  ;
+```
+
+以下是执行上述 SQL 的结果：
+
+![result](/image/blog/differences-7-cn.png)
+
+我们再看到其中执行的三个查询语句的结果：
+
+![result1](/image/blog/differences-8-cn.png)
+![result2](/image/blog/differences-9-cn.png)
+![result3](/image/blog/differences-10-cn.png)
+
+如上图所示，我们可以清晰的看到，该表在`delete`操作的前中后的三个状态，在`DELETE`操作执行完之后，我们通过对事务的`rollback`后，发现数据全部都回来了，证明`DELETE`操作是会消耗事务日志资源的。
+
+#### `TRUNCATE`操作
+
+```SQL
+-- 查询该表当前的总记录函数
+SELECT
+  count(*)
+FROM
+  example_data_copy_0902144250;
+
+SET
+  autocommit = 0;
+
+TRUNCATE table example_data_copy_0902144250;
+
+-- 执行truncate后，但事务为回滚，查询该表的总记录数
+SELECT
+  count(*)
+FROM
+  example_data_copy_0902144250;
+
+rollback;
+
+-- 查询事务回滚后，查询该表的总记录数
+SELECT
+  count(*)
+FROM
+  example_data_copy_0902144250;
+```
+
+以下是执行上述 SQL 的执行结果：
+
+![result](/image/blog/differences-11-cn.png)
+
+我们再看到其中执行的三个查询语句的结果：
+
+![result1](/image/blog/differences-12-cn.png)
+![result2](/image/blog/differences-13-cn.png)
+![result3](/image/blog/differences-14-cn.png)
+
+从上述三个结果其实我们也知道了，执行`TRUNCATE`操作的时候，无论事务有没有回滚，数据都是无法恢复的了，所以`TRUNCATE`操作时无法回滚的，那么它相对也是不占用事务日志资源的。
+
+# 总结
+
+总之，DROP、DELETE 和 TRUNCATE 各有不同的目的，对数据恢复和性能也有不同的影响。了解这些差异有助于为特定情况选择合适的命令，提高数据库管理操作的效率和有效性。
+
+## 开始体验 Chat2DB Pro
+
+如果你正在寻找一款强大、基于 AI 的数据库管理工具，快来试试 Chat2DB 吧！无论你是数据库管理员、开发者还是数据分析师，Chat2DB 都能通过 AI 的强大功能简化你的工作。
+
+👉[现在享受 Chat2DB Pro 30 天免费试用](https://chat2db.ai/zh-CN/pricing)，即刻体验所有高级功能。

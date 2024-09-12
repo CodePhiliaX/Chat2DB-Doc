@@ -1,0 +1,194 @@
+---
+image: ""
+description: "Typically, we interact with databases using SQL commands. This article dives into the key differences between DROP, DELETE, and TRUNCATE operations, essential for understanding database management."
+date: September 12, 2024
+---
+
+# Differences Between DROP, DELETE and TRUNCATE in SQL
+
+In database operations, we usually work with databases through SQL statements. While many graphical tools are available to simplify these tasks, they ultimately convert user actions into SQL queries to interact with the database. No matter how sophisticated a database management tool may be, it always relies on SQL at its core.
+
+Here are some popular graphical database tools available today:
+
+- **DataGrip**: Developed by JetBrains, this is a well-known database management tool among developers for its powerful features and support for multiple databases.
+- **DBeaver**: An open-source database management tool that, while less known than DataGrip, is still popular within developer communities, especially for its support of various databases.
+- **Navicat**: With over 20 years of history, Navicat is highly recognized in the domestic market. It supports multiple databases and offers a wide range of features.
+- **Chat2DB**: A new product founded by a former Alibaba employee and creator of EasyExcel. Though relatively young, its deep integration with AI significantly enhances operational efficiency, making it a rapidly growing option.
+
+Despite the availability of many excellent database client tools, as developers, we still need to be proficient in SQL to better understand how databases operate. Today, let's delve into the differences between `DROP`, `DELETE`, and `TRUNCATE` operations.
+
+## TL;DR
+
+| Operation | SQL Type                         | Purpose                                                      | Preserves Table Structure | Supports Transaction Rollback | Execution Speed            | Use Case                                                     |
+| --------- | -------------------------------- | ------------------------------------------------------------ | ------------------------- | ----------------------------- | -------------------------- | ------------------------------------------------------------ |
+| DROP      | DDL (Data Definition Language)   | Deletes an entire table or other database object             | No                        | No                            | Fastest                    | When you no longer need the table and want to completely remove it along with its data. |
+| DELETE    | DML (Data Manipulation Language) | Deletes specific records (rows) from a table while keeping the table structure and indexes | Yes                       | Yes                           | Slow (row-by-row deletion) | When you want to delete part or all of the records but keep the table structure. |
+| TRUNCATE  | DDL (Data Definition Language)   | Quickly deletes all records in a table while keeping the table structure and indexes | Yes                       | No                            | Faster                     | When you want to clear all data from a table but preserve the table structure. |
+
+## Types of SQL Commands
+
+To differentiate DROP, DELETE, and TRUNCATE, let's first categorize them based on SQL types:
+
+### DROP
+
+**Type**: DDL (Data Definition Language) operation.
+
+**Syntax**: `DROP TABLE table_name;`
+
+**Purpose**: Deletes an entire table, view, index, or other database objects. Once executed, the object cannot be recovered, and both the structure and data are removed permanently.
+
+### DELETE
+
+**Type**: DML (Data Manipulation Language) operation.
+
+**Syntax**: `DELETE FROM table_name WHERE condition;`
+
+**Purpose**: Deletes specific records (rows) from a table while retaining the table structure and indexes. DELETE can specify conditions through the WHERE clause, allowing the deleted records to be recovered via transaction rollback (if supported).
+
+### TRUNCATE
+
+**Type**: DDL operation, though primarily used for data manipulation.
+
+**Syntax**: `TRUNCATE TABLE table_name;`
+
+**Purpose**: Quickly deletes all records in a table, keeping the table structure and indexes intact. Unlike DELETE, TRUNCATE does not support WHERE clauses for selecting records, nor does it support transaction rollback. TRUNCATE is generally faster because it releases the data space of the table directly rather than deleting records row-by-row.
+
+## Performance Comparison
+
+### 1. DROP — Fastest
+
+The DROP operation removes the entire definition of a table from the database's metadata, including structure, data, indexes, and triggers. It doesn't process rows individually, making it very fast. It's suitable for removing a table entirely when it's no longer needed.
+
+![Time Consumption of Drop Operations](/image/blog/differences-1-en.png)
+
+### 2. DELETE — Slowest
+
+The DELETE operation scans the target table row-by-row and uses the WHERE clause to determine which rows should be deleted. Each deletion is logged for transaction rollback purposes. If there are triggers configured (BEFORE DELETE or AFTER DELETE), they fire during the delete operation. This row-by-row processing, especially with complex WHERE conditions, makes DELETE the slowest among the three. It's beneficial when higher flexibility is required, allowing precise removal of specific data.
+
+![Time Consumption of DELETE Operations](/image/blog/differences-2-en.png)
+
+### 3. TRUNCATE — Faster
+
+The TRUNCATE operation releases the data space of the table directly, deleting all records without individual row processing and without triggering row-level triggers. This makes it much faster than DELETE. The table structure and indexes remain, making it slower than DROP.
+
+![Time Consumption of TRUNCATE Operations](/image/blog/differences-3-en.png)
+
+## Deep Dive into DELETE and TRUNCATE
+
+### Triggers
+
+#### `DELETE`
+
+We can create a trigger to log deletions and see if the DELETE operation triggers our trigger.
+
+![delete trigger](/image/blog/differences-4-en.png)
+
+After running, we find that the `delete_log` table indeed contains numerous deletion logs, indicating that the DELETE operation triggers the associated trigger on the table.
+
+![delete_log](/image/blog/differences-5-en.png)
+
+#### `TRUNCATE`
+
+However, if we use the TRUNCATE operation, we find that the `delete_log` table does not contain any inserted logs, confirming that the TRUNCATE operation does not trigger the associated trigger on the table.
+
+![truncate trigger](/image/blog/differences-6-en.png)
+
+### Transactions
+
+#### `DELETE`
+
+```SQL
+-- Query the current total record count function
+SELECT 
+  count(*) 
+FROM 
+  example_data_copy_0902144250 
+  ;
+
+
+SET
+  autocommit = 0;
+
+DELETE FROM example_data_copy_0902144250;
+
+-- Query the total record count after executing the delete but before committing
+SELECT 
+  count(*) 
+FROM 
+  example_data_copy_0902144250 
+  ;
+
+ROLLBACK;
+
+-- Query the total record count after rolling back the transaction
+SELECT 
+  count(*) 
+FROM 
+  example_data_copy_0902144250 
+  ;
+```
+
+Here are the results of executing the above SQL:
+
+![result](/image/blog/differences-7-en.png)
+
+Let's look at the results of the three queries:
+
+![result1](/image/blog/differences-8-en.png)
+![result2](/image/blog/differences-9-en.png)
+![result3](/image/blog/differences-10-en.png)
+
+As shown in the images above, we can clearly see the three states of the table before, during, and after the DELETE operation. After executing the DELETE operation and rolling back the transaction, we find that all the data returns, proving that the DELETE operation consumes transaction log resources.
+
+#### `TRUNCATE`
+
+```SQL
+-- Query the current total record count function
+SELECT
+  count(*)
+FROM
+  example_data_copy_0902144250;
+
+SET
+  autocommit = 0;
+
+TRUNCATE TABLE example_data_copy_0902144250;
+
+-- Query the total record count after executing the truncate but before committing
+SELECT
+  count(*)
+FROM
+  example_data_copy_0902144250;
+
+ROLLBACK;
+
+-- Query the total record count after rolling back the transaction
+SELECT
+  count(*)
+FROM
+  example_data_copy_0902144250;
+```
+
+Here are the results of executing the above SQL:
+
+![result](/image/blog/differences-11-en.png)
+
+Let's look at the results of the three queries:
+
+![result1](/image/blog/differences-12-en.png)
+![result2](/image/blog/differences-13-en.png)
+![result3](/image/blog/differences-14-en.png)
+
+From the above three results, we can see that regardless of whether the transaction is rolled back or not, the data cannot be recovered after executing the TRUNCATE operation. Therefore, the TRUNCATE operation is irreversible and does not consume transaction log resources.
+
+## Summary
+
+To sum up, DROP, DELETE, and TRUNCATE each serve distinct purposes and have different implications regarding data recovery and performance. Understanding these differences helps in choosing the appropriate command for specific situations, enhancing the efficiency and effectiveness of database management operations.
+
+## Get Started with Chat2DB Pro
+
+If you're looking for an intuitive, powerful, and SQL-driven database management tool, give Chat2DB a try! Whether you're a database administrator, developer, or data analyst, Chat2DB simplifies your work with the power of AI.
+
+Enjoy a 30-day free trial of Chat2DB Pro. Experience all the premium features without any commitment, and see how Chat2DB can revolutionize the way you manage and interact with your databases.
+
+👉 [Start your free trial today](https://chat2db.ai/pricing) and take your database operations to the next level!
