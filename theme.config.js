@@ -65,4 +65,7 @@ export default {
   // feedback:
   //   "https://github.com/codePhiliaX/chat2db-doc/issues/new?title=Feedback%20for%20%E2%80%9CChangelog%E2%80%9D&labels=feedback",
   editLink: false,
+  nextThemes: {
+    defaultTheme: "dark",
+  },
 };
