@@ -1,0 +1,113 @@
+---
+title: "PostgreSQLのステートメントタイムアウト"
+description: "PostgreSQLにおける一般的なタイムアウト設定とその使用法について学んでください。"
+image: "/blog/image/8.jpeg"
+category: "Guide"
+date: October 11, 2024
+---
+
+# PostgreSQLのステートメントタイムアウト
+
+PostgreSQLには、データベース操作の継続時間を制御し、システムの性能と安定性を最適化するのに役立つ様々なタイムアウト設定があります。以下にいくつかの一般的なタイムアウト設定とその使用法を示します。
+
+![PostgreSQL](/image/blog/timeout/1.png)
+
+## ステートメントのタイムアウト
+
+[公式サイトの説明:](https://www.postgresql.org/docs/current/runtime-config-client.html#GUC-STATEMENT-TIMEOUT)
+
+![Statement timeout](/image/blog/timeout/2.png)
+
+`statement_timeout`は1つの問い合わせの最大実行時間を設定します。問い合わせがこの制限時間を超えた場合、PostgreSQLは自動的に問い合わせをキャンセルし、エラーを返します：
+
+```sql
+ERROR:  canceling statement due to statement timeout
+```
+
+クエリに複数の SQL 文が含まれる場合、タイムアウトは各文に個別に適用されます。この設定は、長時間実行されるクエリが多くのリソースを消費するのを防ぎ、データベースの効率的な実行を保証します。
+
+## トランザクションのタイムアウト
+
+[公式サイトの説明:](https://www.postgresql.org/docs/current/runtime-config-client.html#GUC-TRANSACTION-TIMEOUT)
+
+![Image description](/image/blog/timeout/3.png)
+
+これは、明示的トランザクション（`BEGIN`で開始するトランザクション）と暗黙的トランザクション（単一の文からなるトランザクション）の両方に適用できます。この機能は、トランザクションに含まれる文がどんなに短くても、設定された時間を超えたトランザクションを自動的に終了させます。
+
+典型的なウェブサービスは、通常3つのコア・コンポーネントで構成される：
+
+- ウェブサーバー
+- アプリケーションサーバー
+- データベースサーバー
+
+長時間の接続を避けるため、ウェブサーバーやアプリケーションサーバーには通常、接続タイムアウトが設定されています。しかし、データベースがまだトランザクションを処理している間にWebサーバやアプリケーションサーバが接続を終了してしまった場合、実際にはリソースの浪費となります。PostgreSQLが `transaction_timeout` を導入する以前は、長時間実行されるトランザクションを防止する効果的な仕組みがありませんでした。statement_timeout`と`idle_in_transaction_session_timeout`が同時に設定されていても、トランザクションに短い文と断続的な待ち時間が含まれていれば、トランザクションは長時間有効なままです。
+
+なぜPostgreSQLがこのような基本的な機能である`transaction_timeout`をこんなに遅く導入したのか不思議に思うかもしれません。幸いなことに、ついにこの機能が導入されました！ちなみに、MySQLには同様の機能はまだありません。
+
+## Lock timeout 
+
+[公式サイトの説明:](https://www.postgresql.org/docs/current/runtime-config-client.html#GUC-LOCK-TIMEOUT)
+
+![Image description](/image/blog/timeout/4.png)
+
+`lock_timeout`はトランザクションがデータベースオブジェクト（テーブルや行など）のロックを待つ最大時間を制御します。タイムアウトを過ぎると、PostgreSQLはトランザクションをキャンセルし、エラーを返します：
+
+```sql
+ERROR:  canceling statement due to lock timeout
+```
+
+Postgresでは、ロックの取得を待つトランザクションは、同じリソースを必要とする他のトランザクションをブロックする可能性があります。重いロックの取得が必要な操作（DDL文など）では、`lock_timeout`を短く設定することで、リソースを時間内に解放することができます。例えば
+
+```SQL
+-- Set the lock timeout for the user to 5 seconds
+ALTER ROLE admin_user SET lock_timeout = 5000; 
+```
+
+## Idle session timeout 
+
+[公式サイトの説明:](https://www.postgresql.org/docs/current/runtime-config-client.html#GUC-IDLE-SESSION-TIMEOUT)
+
+![Image description](/image/blog/timeout/5.png)
+
+`idle_session_timeout`はアイドル状態のセッションに適用され、セッションが終了するまでのアイドル状態の最大時間を制御します。セッションが指定された時間操作を行わなかった場合、PostgreSQLは接続を切断します：
+
+```sql
+ERROR:  terminating connection due to idle session timeout
+```
+
+コネクションプールやその他のミドルウェアを使用する場合、この設定によって予期せぬ接続の終了が発生する可能性があることに注意することが重要です。この設定は対話型セッションでよく使用されるので、そのようなユーザーには妥当なタイムアウト値を設定することなどを推奨する：
+
+```SQL
+-- Set idle session timeout to 10 minutes
+ALTER ROLE admin_user SET idle_session_timeout = 600000;
+
+-- Set idle session timeout to 10 minutes
+ALTER ROLE admin_user SET idle_session_timeout = '10min'; 
+```
+
+## Idle session timeout in transaction 
+
+[公式サイトの説明:](https://www.postgresql.org/docs/current/runtime-config-client.html#GUC-IDLE-IN-TRANSACTION-SESSION-TIMEOUT)
+
+![Image description](/image/blog/timeout/6.png)
+
+`idle_in_transaction_session_timeout`はトランザクションがアイドル状態を維持できる最大時間を制御します。タイムアウトを過ぎると、PostgreSQLは自動的にセッションを終了し、未完了のトランザクションをロールバックします：
+
+```sql
+ERROR:  terminating connection due to idle-in-transaction timeout
+```
+
+ユーザーの入力を待ったり、データベースに関連しない処理を実行したりする間、時折トランザクションをオープンするアプリケーションがあるとします。トランザクションがオープンされた状態でアイドル状態が長く続くと、テーブルや行のロックが保持され、他のトランザクションがそれらのリソースにアクセスできなくなる可能性があります。
+
+この設定は、ユーザーの入力待ちやデータベース以外のタスクの処理中にトランザクションを開いたままにする可能性があるアプリケーション向けです。アイドル状態のトランザクションを長時間オープンしておくと、他のトランザクションがブロックされたり、テーブルが肥大化したりする可能性があるため、このタイムアウトを設定することで、リソースが不必要に保持されるのを防ぐことができます。
+
+## 参考
+
+- [Official Documentation](https://www.postgresql.org/docs/current/runtime-config-client.html)
+- [pgSQL-hackers Discussion on the introduction of transaction_timeout](https://www.postgresql.org/message-id/flat/f508267d1ba8f0bfd7b93181d10511dc@oss.nttdata.com#2506da45ff92aaea65c30996fbf19c85)
+
+## Chat2DB Proの体験を始めましょう
+
+強力でAIベースのデータベース管理ツールをお探しの方は、ぜひChat2DBをご試用ください！データベース管理者、開発者、データアナリストを問わず、Chat2DBはAIの強力な機能を活用してあなたの仕事を簡略化します。
+
+👉[今すぐChat2DB Proの30日間無料トライアルを体験](https://chat2db.ai/pricing)、全てのプレミアム機能をお楽しみください。

@@ -1,0 +1,119 @@
+---
+title: "Statement Timeout in PostgreSQL"
+description: "Learn about the common timeout settings and their uses in PostgreSQL"
+image: "/blog/image/8.jpeg"
+category: "Guide"
+date: October 11, 2024
+---
+
+# Statement Timeout in PostgreSQL
+
+PostgreSQL provides a variety of timeout settings to help control the duration of database operations and optimize system performance and stability, especially in high-concurrency or complex query environments. The following are several common timeout settings and their uses.
+
+![PostgreSQL](/image/blog/timeout/1.png)
+
+## Statement timeout
+
+[Official website description:](https://www.postgresql.org/docs/current/runtime-config-client.html#GUC-STATEMENT-TIMEOUT)
+
+![Statement timeout](/image/blog/timeout/2.png)
+
+`statement_timeout` sets the maximum execution time for a single query. If the query exceeds this time limit, PostgreSQL will automatically cancel the query and return an error:
+
+```sql
+ERROR:  canceling statement due to statement timeout
+```
+
+If a query contains multiple SQL statements, the timeout will be applied to each statement separately. This setting helps prevent long-running queries from consuming too many resources and ensures that the database runs efficiently.
+
+## Transaction timeout
+
+[Official website description:](https://www.postgresql.org/docs/current/runtime-config-client.html#GUC-TRANSACTION-TIMEOUT)
+
+
+![Image description](/image/blog/timeout/3.png)
+
+PostgreSQL 17 introduces a new `transaction_timeout` setting that limits the maximum duration of transactions, applicable to both explicit transactions (started with `BEGIN`) and implicit transactions (transactions consisting of a single statement). This feature automatically terminates transactions that exceed the set time, no matter how short the statements contained in the transaction are.
+
+A typical web service usually consists of three core components:
+
+- Web server
+- Application server
+- Database server
+
+To avoid long-lasting connections, connection timeouts are usually set on web servers and application servers. But when the web or application server has terminated the connection while the database is still processing the transaction, it is actually a waste of resources. Before PostgreSQL introduced `transaction_timeout`, there was no effective mechanism to prevent long-running transactions. Even if `statement_timeout` and `idle_in_transaction_session_timeout` are set at the same time, if the transaction contains short statements and intermittent waits, the transaction may still remain active for a long time.
+
+You may wonder why PostgreSQL introduced such a basic feature as `transaction_timeout` so late. Fortunately, it is finally here! By the way, MySQL does not have a similar feature yet.
+
+## Lock timeout 
+
+[Official website description:](https://www.postgresql.org/docs/current/runtime-config-client.html#GUC-LOCK-TIMEOUT)
+
+
+![Image description](/image/blog/timeout/4.png)
+
+`lock_timeout` controls the maximum time a transaction waits for a lock on a database object (such as a table or row). After the timeout, PostgreSQL cancels the transaction and returns an error:
+
+```sql
+ERROR:  canceling statement due to lock timeout
+```
+
+In Postgres, transactions waiting to acquire locks may block other transactions that need the same resource. For operations that need to acquire heavyweight locks (such as DDL statements), you can set a shorter `lock_timeout` to ensure that resources are released in time. For example:
+
+```SQL
+-- Set the lock timeout for the user to 5 seconds
+ALTER ROLE admin_user SET lock_timeout = 5000; 
+```
+
+## Idle session timeout 
+
+[Official website description:](https://www.postgresql.org/docs/current/runtime-config-client.html#GUC-IDLE-SESSION-TIMEOUT)
+
+
+![Image description](/image/blog/timeout/5.png)
+
+`idle_session_timeout` applies to any idle session and controls the maximum amount of time a session can be idle before being terminated. If a session does not perform any operations for a specified period of time, PostgreSQL will terminate the connection:
+
+```sql
+ERROR:  terminating connection due to idle session timeout
+```
+
+When using connection pools or other middleware, it is important to be aware that this setting may cause unexpected termination of the connection. This setting is often used for interactive sessions, and it is recommended to set a reasonable timeout value for such users, for example:
+
+```SQL
+-- Set idle session timeout to 10 minutes
+ALTER ROLE admin_user SET idle_session_timeout = 600000;
+
+-- Set idle session timeout to 10 minutes
+ALTER ROLE admin_user SET idle_session_timeout = '10min'; 
+```
+
+## Idle session timeout in transaction 
+
+[Official website description:](https://www.postgresql.org/docs/current/runtime-config-client.html#GUC-IDLE-IN-TRANSACTION-SESSION-TIMEOUT)
+
+
+![Image description](/image/blog/timeout/6.png)
+
+`idle_in_transaction_session_timeout` controls the maximum time a transaction can remain idle. After the timeout, PostgreSQL automatically terminates the session and rolls back any unfinished transactions:
+
+```sql
+ERROR:  terminating connection due to idle-in-transaction timeout
+```
+
+Imagine you have an application that occasionally opens a transaction while waiting for user input or performing some non-database related processing. If a transaction is open and idle for too long, it might hold locks on tables or rows, preventing other transactions from accessing those resources. 
+
+This setting is for applications that might keep transactions open while waiting for user input or processing non-database tasks. Keeping an idle transaction open for a long time might block other transactions or cause table bloat, so by setting this timeout you can prevent resources from being held up unnecessarily.
+
+## Reference
+
+- [Official Documentation](https://www.postgresql.org/docs/current/runtime-config-client.html)
+- [pgSQL-hackers Discussion on the introduction of transaction_timeout](https://www.postgresql.org/message-id/flat/f508267d1ba8f0bfd7b93181d10511dc@oss.nttdata.com#2506da45ff92aaea65c30996fbf19c85)
+
+## Get Started with Chat2DB Pro
+
+If you're looking for an intuitive, powerful, and AI-driven database management tool, give Chat2DB a try! Whether you're a database administrator, developer, or data analyst, Chat2DB simplifies your work with the power of AI.
+
+Enjoy a 30-day free trial of Chat2DB Pro. Experience all the premium features without any commitment, and see how Chat2DB can revolutionize the way you manage and interact with your databases.
+
+👉 [Start your free trial today](https://chat2db.ai/pricing) and take your database operations to the next level!
