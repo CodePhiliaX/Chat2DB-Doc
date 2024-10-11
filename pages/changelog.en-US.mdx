@@ -2,205 +2,32 @@
 title: "Changelog"
 sidebar_position: 1
 ---
-# Changelog
+import { Tabs, Tab } from 'nextra/components'
+import { useRouter } from 'next/router'
+import { useEffect, useState } from 'react'
+import ProChangelog from './changelog/pro-changelog.en-US.mdx'
+import LocalChangelog from './changelog/local-changelog.en-US.mdx'
 
-## 2.5.0
-`2024-09-04`
-🔥🔥Editor Refactoring🔥🔥
-- Smart hint upgrade
-- Support code block
-- Support error prompt
-- Hover trigger DDL display and other detailed information
-- Support right-click menu
-- More rich shortcut key support
-- SQL execution, automatically trigger editor related information refresh
-- Support theme, font size, line number, line height, wrap, thumbnail and other configurations
+export const ChangelogTabs = () => {
+  const router = useRouter()
+  const [activeTab, setActiveTab] = useState(0)
 
+  useEffect(() => {
+    const tabParam = router.asPath.split('?tab=')[1]
+    const defaultTab = tabParam?.toLowerCase() === 'local' ? 1 : 0
+    setActiveTab(defaultTab)
+  }, [router.asPath])
 
+  return (
+    <Tabs items={['Pro', 'Local']} selectedIndex={activeTab} onChange={setActiveTab}>
+      <Tab>
+        <ProChangelog/>
+      </Tab>
+      <Tab>
+        <LocalChangelog/>
+      </Tab>
+    </Tabs>
+  )
+}
 
-## 2.4.0
-`2024-08-14`
-- 🔥🔥【New Feature】Support for AI table creation, automatic recommendation of suitable column names based on Chinese, can complete table creation more conveniently and quickly
-- 🔥【New Feature】Support for saving SQL to local files
-- ⭐【Optimization】All tables can be selected when creating AI datasets
-- ⭐【Optimization】Column width can be dragged when editing table structure
-- ⭐【Optimization】Report page adapts to mobile end
-- ⭐【Optimization】Reduce the memory usage of the software
-- ⭐【Optimization】Lag issue when result set has large strings
-- 🐞【Bug Fix】Fixed the issue where refreshing the report does not refresh the data
-
-## 2.3.5
-`2024-08-2`
-- 🔥【New Feature】Support saving SQL to local files
-- 🐞【Fix】Fixed the issue where some headers or data in ChatExcel could not be correctly recognized
-- 🐞【Fix】Fixed the conflict between the expand/collapse button of the result set and the scrollbar of the SQL area
-
-## 2.3.0
-`2024-07-31`
-- 🔥【New Feature】Support uploading EXCEL for Q&A on EXCEL files
-- 🔥【New Feature】Reports support free drag-and-drop layout
-- ⭐【Optimization】Report color optimization
-- ⭐【Optimization】Query result set can be expanded and collapsed
-
-## 2.2.0
-`2024-07-25`
-- 🔥【New Feature】Added plugin marketplace, added data migration/backup plugin
-
-## 2.1.2
-`2024-07-17`
-- 🐞【Fix】Problems that AI datasets don't show
-
-## 2.1.1
-`2024-07-16`
-- ⭐【Optimization】Hide buttons without permission in the left data source tree in team mode,
-- ⭐【Optimization】Sort Console by creation time in ascending order,
-- ⭐【Optimization】SQL style and SQL hint style in Console,
-- 🐞【Fix】Fix the issue where copying selected content in the input of the result set does not work,
-- 🐞【Fix】Fix the issue where switching pages in the result set does not work,
-- 🐞【Fix】Fix the issue where the Console frequently prompts no permission in team mode without permission,
-- 🐞【Fix】Fix the issue where DatabaseName is not displayed in the Console box on the report page,
-- 🐞【Fix】Fix the issue where extra line breaks are added when exporting LONGTEXT type
-
-## 2.1.0
-`2024-07-09`
-- 🔥【New Feature】Support for team collaboration
-- 🔥【New Feature】Support for table structure/data import and export
-- 🔥【New Feature】Support for database import and export
-- 🔥【New Feature】Support for executing SQL files
-- 🔥【New Feature】Support for API-based text-to-SQL calls
-- 🔥【New Feature】Support for clearing tables and copying table structures/data
-- 🔥【New Feature】Support for opening SQL files with Chat2DB, and dragging local files into the SQL console
-- 🔥【New Feature】Support for copying column data from query result tables
-- ⭐【New Feature】Support for SQL folding
-- ⭐【New Feature】View support for directly viewing data
-- ⭐【Optimization】Moved console save records to the database section in the left tree
-- 🐞【Fix】Fixed issue with multi-select row copying after sorting query result sets
-- 🐞【Fix】Fixed bug where data was not displayed after refreshing query result sets with where or order by clauses
-
-
-## 2.0.1
-`2024-6-17`
-- 🐞【Fix】Fixed an issue where the modified table data on the desktop does not take effect after sql data is submitted or viewed.
-- 🐞【Fix】Fixed the issue that the AI dataset table field modification page could not scroll.
-- 🐞【Fix】Fixed the Chat page style issue.
-
-## 2.0.0
-`2024-6-12`
-- 🔥【New Feature】Brand Upgrade
-- 🔥【New Feature】Full Support for Redis Database
-- 🔥【New Feature】Support for TiDB Database
-- 🔥【New Feature】Support for CockroachDB Database
-- 🔥【New Feature】Support for Apache Kylin Database
-
-## 1.2.4
-`2024-6-04`
-- ⚡️【Optimization】Support for displaying column note styles
-- ⚡️【Optimization】Support for expanding child nodes after search
-- ⚡️【Optimization】Support for dropdown display of all tabs in the console and searchable
-- ⚡️【Optimization】Add pop-up in execution summary
-- 🐞【Bug Fix】Fix the issue of failing to copy a node name multiple times with shortcut keys
-- 🐞【Bug Fix】Fix the bug when deleting result page tabs
-- 🐞【Bug Fix】Fix the issue of not recognizing when the data changes from "" to null
-- 🐞【Bug Fix】Fix some bugs when switching data sources in saved console
-- 🐞【Bug Fix】Fix some bugs when modifying data without primary keys in the query results
-- 🐞【Bug Fix】Fix the issue of not being able to execute normally when creating or modifying stored procedures
-
-## 1.2.0
-`2024-5-30`
-- 🔥【New Feature】Support for AI datasets to improve AI accuracy. [Documentation](/docs/ai-chat/ai-data-collection)
-- 🔥【New Feature】Support for openGauss database
-- 🔥【New Feature】Support for SUNDB database
-- 🐞【Fix】Fixed tree node search and other bugs
-- 🐞【Fix】Fixed MySQL field sorting adjustment issue
-- 🐞【Fix】Fixed issue with parsing MySQL functions
-- 🐞【Fix】Fixed SSH connection reuse issue
-- ⚡️【Optimization】Visual and functional improvements for viewing all tables
-- ⚡️【Optimization】Optimized MongoDB database usage
-- ⚡️【Optimization】Changed the way execution results are displayed, insert and update actions will no longer occupy a Tab
-- ⚡️【Optimization】Fixed Tab positioning issue in Console and added column positioning issue when modifying tables
-- ⚡️【Optimization】Visual optimizations
-
-## 1.1.5
-`2024-5-15`
-- ⚡️【Optimization】Automatically focus on input when double-clicking to edit data
-- ⚡️【Optimization】Automatically bring up the database focused on the tree node when clicking the plus sign to create a new console in the Console tab
-- ⚡️【Optimization】After AI conversation, do not clear the current text content
-- 🐞【Fix】Issue with collapsing functions, procedures, triggers
-- 🐞【Fix】Issue where no error message is displayed when data changes result in errors
-- 🐞【Fix】Issue with emoji garbling in default avatars
-- 🐞【Fix】Issue where clicking on a table in the tree does not display the ddl in the right information bar
-- 🐞【Fix】Issue where Oracle does not display schema
-- 🐞【Fix】Issue with deleting group errors
-- 🐞【Fix】Issue with local data source storage errors
-- 🐞【Fix】Query the total number of tables
-- 🐞【Fix】Unable to resolve `now()` time issue
-- 🐞【Fix】Unable to resolve issue where event cannot be created
-
-## 1.1.2
-`2024-5-15`
-- ⭐【New feature】Data source supports grouping 
-- ⚡️【Optimization】Optimize personal center information display and enhance paying user experience 
-- ⚡️【Optimization】Optimized the App lag problem 
-- ⚡️【Optimization】Optimize the overall UI of the App 
-- ⚡️【Optimization】Improved dark mode vision (Handsome dark mode is highly recommended) 
-- ⚡️【Optimization】View all tables Support more information display, support right click operation 
-- 🐞【Bug Fix】Mac Black screen issue 
-- 🐞【Bug Fix】The SQL content exported is correct, but the suffix is incorrect 
-- If you cannot complete the automatic update, please go to https://chat2db-ai.com/zh-CN/download to download the version
-
-## 1.0.7
-`2024-04-26`
-
-- ⭐【New Feature】Support for lifetime membership
-- ⭐【New Feature】No need to log in daily after logging in
-- 🐞【Bug Fix】Fixed an issue where queries would keep loading due to errors in SQL syntax
-- 🐞【Bug Fix】Fixed an issue where editing table structure and only changing the field's null property would result in loss of table structure
-- 🐞【Bug Fix】Fixed a problem where viewing the update log resulted in a 404 error
-
-## 1.0.5
-`2024-4-15`
-
-- ⭐【New Feature】Support for adjusting the editor font size
-- ⭐【New Feature】Added a re-subscription entry in the settings
-- 🐞【Bug Fix】Fixed certain database connection issues
-- 🐞【Bug Fix】Fixed login-related issues
-- 🐞【Bug Fix】Fixed a series of issues with hot updates
-- 🐞【Bug Fix】Fixed an issue where stored procedures and views could not be viewed on the desktop version
-- 🐞【Bug Fix】Fixed an issue with headers overflowing on the query results page in the desktop version
-
-
-## 1.0.3
-`2024-4-11`
-
-- ⭐【New Feature】Support for one-click migration of community edition data sources to Pro version
-- ⭐【New Feature】Support for clone links
-- ⚡️【Optimization】Optimized the scrollbar of the query results page
-- 🐞【Bug Fix】Fixed the issue where the application would get stuck on the startup page
-- 🐞【Bug Fix】Fixed the data source information is garbled
-- 🐞【Bug Fix】Fixed the issue of data source import errors
-- 🐞【Bug Fix】Fixed the issue where the scrollbar could not be dragged
-- 🐞【Bug Fix】Fixed the issue where the language would be reset after switching languages and restarting
-- 🐞【Bug Fix】Fixed the issue where Console Tabs could not be scrolled
-
-
-## 1.0.0
-`2024-4-09`
-
-🎉🎉 We made it, we all made it～ 🎉🎉
-After two months of delay, Chat2DB is back with a strong Pro version! 💪💪
-Click here for details 👉 https://chat2db-ai.com/en
-
-🚀 Major AI upgrade
-🧠 A whole new experience of AI writing SQL: You can call up the AI assistant by typing "/" at any position in the SQL editing box, and exit by pressing esc
-📝 Auto-complete SQL during the writing process, greatly improving SQL efficiency
-🖱️ Right-click on the table to quickly generate test data
-📊 AI generates data dashboards, now you just need to give instructions to the AI, and the entire dashboard can be quickly built
-
-🎁 Open source Chat2DB-GLM fine-tuned SQL model
-Not only have we improved the capabilities of the product itself, but we have also decided to open source our own SQL model, which supports MySQL and PostgreSQL
-For more model details, click here 👉 https://github.com/codePhiliaX/Chat2DB-GLM
-
-🏗️ Architecture upgrade
-The new version of Chat2DB Pro has completely developed its own client architecture solution, reducing the startup time from the original 15s to 3s. The startup speed of java has also been reduced from the previous 12s to less than 1s. If you are interested in our technical implementation, you can keep following us, and we will reveal it to you later.
-
-Let's look forward to and witness the changes brought by Chat2DB Pro together, and welcome you to join our journey to jointly promote the innovation in the field of data management and data analysis! 🎉🎉
+<ChangelogTabs />

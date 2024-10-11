@@ -15,7 +15,7 @@ export default function BlogIndex({ more = "Read more" }) {
       ).map((page) => (
         <div
           key={page.route}
-          className="flex flex-col rounded-lg overflow-hidden cursor-pointer transition-transform duration-300 ease-in-out hover:-translate-y-2 hover:border-2 hover:border-blue-500"
+          className="hover-2 border-transparent  flex flex-col rounded-lg overflow-hidden cursor-pointer transition-transform duration-300 ease-in-out hover:-translate-y-2 hover:border-2 hover:border-blue-500"
           onClick={() => {
             window.open(page.route, "_self");
           }}
@@ -56,7 +56,7 @@ export default function BlogIndex({ more = "Read more" }) {
               </div>
             </div> */}
             {/* 将日期移动到这里 */}
-            <div className="mt-4 text-sm opacity-40">
+            <div className="mt-4 text-xs opacity-40">
               {page.frontMatter?.date}
             </div>
           </div>
