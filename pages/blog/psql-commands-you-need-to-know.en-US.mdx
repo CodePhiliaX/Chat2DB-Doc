@@ -1,0 +1,292 @@
+---
+title: "Top PSQL Commands You Need to Know | PostgreSQL"
+description: "This post teaches you the psql commands you need to know when working with PostgreSQL databases."
+image: "/blog/image/11.png"
+category: "Tips"
+date: October 12, 2024
+---
+
+# Top PSQL Commands You Need to Know | PostgreSQL
+
+PostgreSQL, or Postgres for short, is an object-oriented relational database management system that uses the SQL language. It is free, open source, reliable, and has powerful and efficient performance. PostgreSQL is also one of the most popular and widely used relational databases.
+
+psql is a command-line tool that allows you to interact with a Postgres database through the terminal. With it, you can connect to a database, add, read, and modify data, view databases and fields, or run commands from files, and more.
+
+If you want to learn Postgres commands or need a refresher, you've come to the right place! This article will introduce you to the most important psql commands and options when working with PostgreSQL.
+
+![psql](/image/blog/psql/1.png)
+
+## 1. Connect to the database `psql -d`
+
+The first step is to learn how to connect to the database. There are two ways to connect, depending on where the database is located.
+
+### Same host database
+
+If the database is on the same host as your machine, you can connect using the following command:
+
+```SQL
+psql -d <db-name> -U <username> -W
+
+// example
+psql -d ali_test_demo -U admin -W
+```
+
+The above command contains three parameters:
+
+- -d is used to specify the name of the database to connect to
+- -U is used to specify the username to use
+- -W is used to force pSQL to prompt for a password before connecting to the database
+
+In this example, the command will connect to the ali_test_demo database under the admin user.
+
+### Different Host Database 
+
+If your database is hosted somewhere else, you can connect as follows:
+
+```SQL
+psql -h <db-address> -d <db-name> -U <username> -W
+
+//example
+psql -h localhost -d ali_test_demo -U admin -W
+```
+
+The -h flag specifies the host address of the database.
+
+### SSL Mode 
+
+In some cases, you may want to connect using SSL:
+
+```Plain
+psql "sslmode=require host=<db-address> dbname=<db-name> user=<username>"
+
+//example
+psql "sslmode=require host=my-psql-db.cloud.tech dbname=ali_test_demo user=admin"
+```
+
+The above command opens an SSL connection to the specified database.
+
+## 2. List all databases`- \l`
+
+In many cases, you may be dealing with multiple databases. You can use the following command to view all available databases:
+
+```SQL
+postgres=# \l
+                             List of databases
+   Name        |  Owner  | Encoding |   Collate   |    Ctype    |   Access privileges   |  Size   | Tablespace 
+   ------------+---------+----------+-------------+-------------+-----------------------+---------+-------------
+ customer_data | dbadmin | UTF8     | en_US.UTF-8 | en_US.UTF-8 |                       | 512 MB  | pg_default
+ employees     | dbadmin | UTF8     | en_US.UTF-8 | en_US.UTF-8 |                       | 300 MB  | pg_default
+ inventory     | dbadmin | UTF8     | en_US.UTF-8 | en_US.UTF-8 |                       | 1 GB    | pg_default
+ template0     | postgres| UTF8     | en_US.UTF-8 | en_US.UTF-8 | =c/postgres          +| 3276 kB | pg_default
+ template1     | postgres| UTF8     | en_US.UTF-8 | en_US.UTF-8 | =c/postgres          +| 3276 kB | pg_default
+(5 rows)
+```
+
+The image above illustrates what happens when you run the command. You will get a table of all databases with their names, owners, access permissions, and other information.
+
+## 3. Switch to another database`- \c`
+
+You can also switch to another database using the following command:
+
+```SQL
+\c <db-name>
+
+// example
+\c sy_test_db
+```
+
+for example:
+
+```SQL
+postgres=# \c sy_test_db
+You are now connected to database "sy_test_db" as user "postgres"
+sy_test_db=# 
+```
+
+This command switches to the specified database under the user you logged in previously.
+
+## 4. List Database Tables `- \dt`
+
+Let's consider that you want to see all the tables in a database. You can list all database tables as follows:
+
+```SQL
+sy_test_db=# \dt
+            List of relations
+Schema |       Name        | Type  | Owner
+-------+-------------------+-------+-------
+public  |     users        | table | postgres
+public  |     orders       | table | postgres
+public  |     products     | table | postgres
+(3 rows)
+```
+
+The `\dt` psql command returns the following information about a table:
+
+- The schema to which the table belongs
+- The type of table
+- The owner of the table
+
+## 5. Describe a table `- \d`
+
+psql also has a command that allows you to view the structure of a table.
+
+```Plain
+\d <table-name>
+
+// example
+\d ali_test_db
+```
+
+The `\d` command returns all the columns of a table, their data types, indexes, whether nulls are allowed, and the configured default values.
+
+If you want to get more information about a table, you can use the following command:
+
+```SQL
+\d+ <table-name>
+ali_test_db=# \d+ employees
+                    Table "public.employees"
+Column   |      Type             | Collation | Nullable | Default | Storage  | Stats target | Description 
+---------+-----------------------+-----------+----------+---------+----------+--------------+--------------
+id       |       integer         |           | not null | nextval('employees_id_seq'::regclass) | plain |
+name     | character varying(50) |           |          | extended | 
+age      |       smallint        |           |          | plain    | 
+email    | character varying(100)|           | not null | extended | 
+position | character varying(50) |           |          | extended | 
+salary   |    numeric(10,2)      |           |          | main     | 
+
+Indexes:
+    "employees_pkey" PRIMARY KEY, btree (id)
+
+Access method: heap
+```
+
+Now you can get additional information such as storage, compression, statistics target and description.
+
+## 6. List all schemas`- \dn`
+
+`\dn` The psql command lists all database schemas. It returns the name of the schema and its owner.
+
+```SQL
+\dn
+```
+
+## 7. Listing Users and Their Roles `- \du`
+
+Sometimes, you may need to change a user. Postgres has a command to list all users and their roles.
+
+```SQL
+\du
+postgres=# \du
+Role name        | Attributes | Member of
+-----------------+------------+----------
+postgres         | Superuser, Create role, Create DB, Replication, Bypass RLS | {}
+ali_demo1        |     {}     | {}
+```
+
+## 8. Retrieve a specific user `- \du`
+
+You can also retrieve information about a specific user using the following command:
+
+```SQL
+\du <username>
+
+//example
+/du postgres
+```
+
+You can now view the roles of a specified user and whether the user is a member of a group.
+
+```SQL
+ali_test_db=# /du postgres
+Role name | Attributes | Member of
+----------+------------+----------
+postgres | Superuser, Create role, Create DB, Replication, Bypass RLS | {}
+```
+
+## 9. List all functions `- \df`
+
+You can use the \df command to list all functions in the database, which will return the following information:
+
+- The schema to which the function belongs
+- The name of the function
+- The result data type returned by the function
+- The function's parameter data types
+- The type of function
+
+Doing this can help you view all the functions defined in the database and their details.
+
+## 10. List all views `- \dv`
+
+The psql interface enables you to list all database views using the \dv command.
+
+## 11. Save query results to a file `- \o`
+
+In some cases, you may want to analyze the query results later, or compare the results of two queries. The psql interface allows this. You can save query results to a file in the following ways:
+
+```Plain
+\o <file-name>
+// example
+\o query_results
+...run the psql commands...
+\o - stop the process and output the results to the terminal again
+```
+
+Let's save the following query results to a file:
+
+- Available database tables
+- Results describing database tables
+- List of all users
+- Details of user "postgres"
+
+![psql](/image/blog/psql/2.png)
+
+> Note: To stop saving the results to a file, you need to run the \o command again (without a file name).
+
+## 12. Run commands from a file `- \i`
+
+You can also execute commands from a file. Although this method may not be the best choice for simple commands, it is very useful when you need to run multiple commands or complex SQL statements.
+
+Please create a text file with the following content:
+
+```Plain
+\l
+\dt
+\du
+```
+
+When you run the file, it should return a list of:
+
+- Databases
+- Database tables
+- Users
+
+You can execute these commands from the file using the following psql command:
+
+```Plain
+\i <file-name>
+
+// example
+\i psql_commands.txt
+```
+
+![psql](/image/blog/psql/3.png)
+
+The command returns all databases, tables, and users as expected.
+
+## 13. Exit psql `- \q`
+
+You can use the \q command to exit the psql interface.
+
+## Summary
+
+The psql interface is powerful and provides rich functions that enable you to perform a variety of operations, including running SQL statements, managing databases, querying data, etc. With psql, you can easily connect to the PostgreSQL database, create and modify tables, insert and update data, and perform complex queries.
+
+If you want to start using PostgreSQL or want to deepen your understanding of its functions, it is recommended that you visit the [official website](https://www.postgresql.org/docs/) of PostgreSQL. On the website, you can find detailed documentation, tutorials, and examples to help you better master the use of PostgreSQL.
+
+## Get Started with Chat2DB Pro
+
+If you're looking for an intuitive, powerful, and AI-driven database management tool, give Chat2DB a try! Whether you're a database administrator, developer, or data analyst, Chat2DB simplifies your work with the power of AI.
+
+Enjoy a 30-day free trial of Chat2DB Pro. Experience all the premium features without any commitment, and see how Chat2DB can revolutionize the way you manage and interact with your databases.
+
+👉 [Start your free trial today](https://chat2db.ai/pricing) and take your database operations to the next level!
