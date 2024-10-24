@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/router";
 
 export default function BlogIndex({ more = "Read more" }) {
-  const { locale, defaultLocale } = useRouter();
+  const { locale, defaultLocale, basePath } = useRouter();
 
   return (
     <div className="py-10 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -22,7 +22,7 @@ export default function BlogIndex({ more = "Read more" }) {
         >
           {page.frontMatter?.image && (
             <img
-              src={page.frontMatter.image}
+              src={`${basePath}${page.frontMatter.image}`}
               alt={page.frontMatter?.title || page.meta?.title || page.name}
               className="w-full max-h-40  object-cover"
             />
