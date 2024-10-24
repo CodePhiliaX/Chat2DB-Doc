@@ -1,0 +1,121 @@
+---
+title: "What is ACID Transactions in Databases"
+description: "A.C.I.D. properties: Atomicity, Consistency, Isolation, and Durability"
+image: "/blog/image/20.png"
+category: "Guide"
+date: October 24, 2024
+---
+
+# What is ACID Transactions in Databases?
+
+In the realm of Database Management Systems (DBMS), the ACID properties play a crucial role in ensuring the integrity, consistency, and reliability of data during transactions. These properties are fundamental to maintaining a stable and accurate database environment.
+
+![ACID](/image/blog/ACID/1.png)
+
+## Introduction
+
+A transaction in a database is a single logical unit of work that accesses and potentially modifies the database contents. It involves read-and-write operations. To guarantee the database's integrity and consistency before and after a transaction, certain properties must be adhered to, known as the ACID properties.
+
+## Atomicity
+
+### Definition
+
+Atomicity dictates that a transaction occurs entirely or not at all. There is no intermediate state; transactions cannot be partially executed. Each transaction is regarded as a single unit, and it either runs to completion or is not executed. This involves two key operations:
+
+- **Abort**: If a transaction aborts, any changes made to the database are not visible.
+- **Commit**: If a transaction commits, the changes made become visible. This property is often referred to as the 'All or nothing rule'.
+
+### Example
+
+Consider a transaction T that involves transferring $100 from account X to account Y. Before the transaction, X has $500 and Y has $200. The transaction T consists of two sub-operations T1 and T2:
+
+![ACID](/image/blog/ACID/2.png)
+
+If the transaction fails after T1 is completed but before T2 (for example, after write(X) but before write(Y)), then $100 has been deducted from X but not added to Y, resulting in an inconsistent database state. Thus, the entire transaction must be executed successfully to maintain database consistency.
+
+## Consistency
+
+### Definition
+
+Consistency requires that integrity constraints be maintained, ensuring the database is in a consistent state before and after a transaction. It pertains to the correctness of the database.
+
+### Example
+
+Referring back to the account transfer example, the total amount of money in the system should remain the same before and after the transaction. Before T occurs, the total is $500 + $200 = $700. After T occurs, it should be $400 + $300 = $700. If T1 completes but T2 fails, the transaction is incomplete, and the database becomes inconsistent.
+
+## Isolation
+
+### Definition
+
+Isolation ensures that multiple transactions can occur concurrently without causing the database state to become inconsistent. Transactions occur independently without interference. Changes made in one transaction are not visible to other transactions until they are written to memory or committed. This property guarantees that the concurrent execution of transactions results in a state equivalent to a serial execution in some order.
+
+### Example
+
+Let X = $500 and Y = $500. Consider two transactions T and T’:
+
+T: Read (X), X := X * 100, Write (X), Read (Y), Y := Y - 50, Write(Y)
+
+T’: Read (X), Read (Y), Z := X + Y, Write (Z)
+
+If T has been executed until Read (Y) and then T’ starts, an interleaving of operations occurs. T’ reads the correct value of X but the incorrect value of Y, and the sum computed by T’ ($50,000 + $500 = $50,500) is not consistent with the sum at the end of T ($50,000 + $450 = $50,450), resulting in a database inconsistency of 50 units. Therefore, transactions must occur in isolation, and changes should only be visible after being made to the main memory.
+
+## Durability
+
+### Definition
+
+Durability ensures that once a transaction has completed execution, the updates and modifications to the database are stored on disk and persist even if a system failure occurs. These updates become permanent and are stored in non-volatile memory, ensuring that the effects of the transaction are never lost.
+
+**Some important points:**
+
+![ACID](/image/blog/ACID/3.png)
+
+## Responsibility for Maintaining ACID Properties
+
+- **Atomicity**: The Transaction Manager is responsible for maintaining atomicity.
+- **Consistency**: The Application Programmer is responsible for ensuring consistency.
+- **Isolation**: The Concurrency Control Manager is responsible for isolation.
+- **Durability**: The Recovery Manager is responsible for durability.
+
+## Advantages of ACID Properties
+
+### Data Consistency
+
+ACID properties guarantee that data remains consistent and accurate after any transaction execution. This is crucial for maintaining the integrity of the database and ensuring that users can rely on the data.
+
+### Data Integrity
+
+By ensuring that any changes to the database are permanent and cannot be lost, ACID properties maintain the integrity of the data. This protects against data corruption and loss.
+
+### Concurrency Control
+
+ACID properties help manage multiple concurrent transactions by preventing interference between them. This allows for efficient use of the database system and ensures that transactions can occur simultaneously without causing issues.
+
+### Recovery
+
+In the event of a system failure or crash, ACID properties ensure that the system can recover data up to the point of failure. This minimizes data loss and allows the system to resume normal operation quickly.
+
+## Disadvantages of ACID Properties
+
+### Performance
+
+The ACID properties can impose a performance overhead on the system. The additional processing required to ensure data consistency and integrity can slow down the execution of transactions.
+
+### Scalability
+
+In large distributed systems where multiple transactions occur concurrently, the ACID properties may cause scalability issues. The need to maintain strict consistency and isolation can limit the system's ability to handle a large number of transactions efficiently.
+
+### Complexity
+
+Implementing the ACID properties can increase the complexity of the system. It requires significant expertise and resources to ensure that all properties are properly maintained.
+
+## Conclusion
+
+In summary, the ACID properties - Atomicity, Consistency, Isolation, and Durability - are essential for data consistency, integrity, and reliability in DBMS. While they offer numerous advantages in terms of data management, they also come with some disadvantages related to performance, scalability, and complexity. However, the benefits generally outweigh the drawbacks, and understanding and implementing these properties correctly is crucial for maintaining a reliable and efficient database system.
+
+## Get Started with Chat2DB Pro
+
+If you're looking for an intuitive, powerful, and AI-driven database management tool, give Chat2DB a try! Whether you're a database administrator, developer, or data analyst, Chat2DB simplifies your work with the power of AI.
+
+Enjoy a 30-day free trial of Chat2DB Pro. Experience all the premium features without any commitment, and see how Chat2DB can revolutionize the way you manage and interact with your databases.
+
+👉 [Start your free trial today](https://chat2db.ai/pricing) and take your database operations to the next level!
