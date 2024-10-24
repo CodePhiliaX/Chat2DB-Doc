@@ -1,0 +1,282 @@
+---
+title: "A Beginner’s Guide to Database Normalization: 1NF, 2NF, 3NF, and Beyond"
+description: "In this article, we will explore the basic concepts of normalization, its importance, and related techniques."
+image: "/blog/image/17.png"
+category: "Guide"
+date: October 22, 2024
+---
+
+# A Beginner’s Guide to Database Normalization: 1NF, 2NF, 3NF, and Beyond
+
+In this article, we will explore the basic concepts of normalization, its importance, and related techniques. This article is suitable for readers who want to enter the data industry.
+
+## What is normalization in SQL?
+
+In the context of relational databases, normalization refers to a method of organizing data to eliminate data redundancy and other anomalies. In short, normalization involves splitting large, complex tables into smaller, more manageable tables while maintaining the data relationships between the tables. This approach is particularly useful when dealing with large data sets to ensure data consistency and integrity.
+
+Let's take a quick look at some scenarios where normalization is often used.
+
+![normalization](/image/blog/normalization/1.png)
+
+### Data Integrity
+
+Imagine a database that stores customer information. Without normalization, when a customer's age changes, it needs to be updated in multiple places in the database, increasing the risk of inconsistent data. By normalizing data, we can break the information into separate tables that are related to each other through unique identifiers, which ensures data accuracy and consistency.
+
+### Efficient Queries
+
+Let's consider a complex database with multiple related tables that store redundant information. In this case, queries involving table joins will not only become more complex, but also consume more resources. With normalization, data can be split into smaller, specialized tables, each containing only the necessary information, thereby simplifying queries and reducing the need for complex join operations.
+
+### Storage Optimization
+
+One of the main problems with redundant data is that it takes up unnecessary storage space. For example, if the same product details are stored in every order record, data will be duplicated. With normalization, this redundancy can be eliminated by separating data into different tables.
+
+## Why is SQL Normalization Important?
+
+Normalization plays a key role in database design. Here are a few aspects of its importance:
+
+- **Reduce Redundancy:** Redundancy refers to the storage of the same information multiple times. An effective way to avoid this is to break up the data into smaller tables.
+- **Improve** **query** **performance:** Smaller tables after normalization can support faster query execution.
+- **Minimize update anomalies:** With a normalized table structure, it is easier to update data without affecting other records.
+- **Enhance data integrity:** Ensure the consistency and accuracy of data.
+
+With normalization, data can be managed and organized efficiently, thereby improving the overall quality and performance of the database.
+
+## What causes the need for normalization?
+
+If a table is not properly normalized, data redundancy will occur, which not only wastes storage space but also complicates the processing and updating of the database. There are many factors that drive the need for normalization, including data redundancy and difficulty in managing relationships between tables. Here are a few scenarios that illustrate why normalization is necessary:
+
+- Insertion, deletion, and update anomalies: If data is not managed properly, any changes to the table (such as inserting new records, updating existing data, or deleting records) may result in data errors or inconsistencies. These anomalies may lead to unexpected loss or corruption of data.
+- Difficulty in managing relationships: In a non-normalized database structure, it is more difficult to maintain complex relationships between tables.
+- Other driving factors: Partial dependencies and transitive dependencies are also one of the factors that drive normalization. Partial dependencies can lead to data redundancy and update anomalies; while transitive dependencies can lead to data anomalies. Next, we will explore how to handle these dependencies to ensure that the database reaches a normalized state.
+
+We will look at how to handle these dependencies in the next section to ensure that the database is normalized.
+
+## Different Types of Database Normalization
+
+So far, we have covered what SQL normalization is, why it is important, and the various reasons that motivate normalization. There are different levels of database normalization, each representing a different degree of data organization.
+
+In this section, we will briefly outline these different normalization levels and explore them in more detail in the following sections.
+
+![normalization](/image/blog/normalization/2.png)
+
+### First Normal Form (1NF)
+
+At this level of normalization, each column in the table is ensured to contain only atomic values, i.e., each entry in the column is indivisible. In other words, just like in a spreadsheet, each cell stores only a single piece of information. 1NF guarantees the atomicity of data, ensuring that each column cell contains only a single value and each column has a unique name.
+
+### Second Normal Form (2NF)
+
+Based on this, the data is further normalized by eliminating partial dependencies. This means that non-key fields must be completely dependent on the entire primary key, not a part of the primary key. That is, each column must be directly related to the primary key, not to other non-key fields.
+
+### Third Normal Form (3NF)
+
+At this level, transitive dependencies are further eliminated. This means that in addition to the primary key, non-key fields should not depend on other non-key fields. 3NF builds on 2NF and provides higher data integrity.
+
+### Boyce-Codd Normal Form (BCNF)
+
+This is a more stringent form of normalization than 3NF, which is used to solve other types of anomalies. In BCNF, every determinant (i.e., a column that affects other columns) should be a candidate key.
+
+### Fourth Normal Form (4NF)
+
+This is a level of normalization that builds on BCNF and focuses on eliminating multi-valued dependencies. 4NF ensures that there are no columns in the table that are not part of the primary key but have multi-valued dependencies on the primary key.
+
+### Fifth Normal Form (5NF)
+
+5NF is the highest level of normalization to resolve join dependencies. It is used in specific situations to reduce redundancy by further splitting the table into smaller tables.
+
+## Database Normalization with Real World Examples
+
+We have highlighted all the levels of data normalization. Let us further explore each of them with examples and explanations.
+
+### First Normal Form (1NF)
+
+1NF ensures that each column cell contains only a single atomic value. Take a library database, for example, where there is a table for storing book information (such as title, author, category, and borrower). If this table is not normalized, the borrower column (borrowed_by) may contain a list of multiple borrower names separated by commas. This situation violates the principle of 1NF because multiple values are contained in a single cell. Below is an example of a table that violates 1NF, as discussed earlier.
+
+![normalization](/image/blog/normalization/3.png)
+
+#### What is the solution?
+
+In 1NF, we solve the problem by creating a separate borrower table and associating it with the book table. The tables can be linked by adding a foreign key in the borrower table that references the primary key of the book table. Doing so establishes the relationship between the tables, thus ensuring data consistency.
+
+You can find a representation of this below:
+
+**Books table**
+
+![normalization](/image/blog/normalization/4.png)
+
+**Borrowers table**
+
+![normalization](/image/blog/normalization/5.png)
+
+### Second Normal Form (2NF)
+
+As mentioned earlier, this level of normalization builds on 1NF by ensuring that there are no partial dependencies on the primary key. In other words, all non-key fields must be fully dependent on the entire primary key, not just on a portion of it.
+
+Starting with 1NF already achieved, we already have a table of books and a table of borrowers (as described in the 1NF section).
+
+Now, let's say we want to link these tables to record borrowings. An initial approach might be to simply add a borrower_id column to the books table, like this:
+
+![normalization](/image/blog/normalization/6.png)
+
+This looks like a solution, but it violates 2NF because the borrower_id is only partially dependent on the book_id. A book can have multiple borrowers, but in this structure, a single borrower_id can only be linked to one book. This creates a partial dependency.
+
+#### What is the solution?
+
+We need to implement a many-to-many relationship between books and borrowers to achieve 2NF. This can be done by introducing a separate table:
+
+**Book_borrowings table**
+
+![normalization](/image/blog/normalization/7.png)
+
+This table establishes a clear relationship between books and borrowers. book_id and borrower_id act as foreign keys, referencing the primary keys in their respective tables. This approach ensures that borrower_id is dependent on the entire primary key (book_id) of the books table, complying with 2NF.
+
+### Third Normal Form (3NF)
+
+3NF is a further development on 2NF, which eliminates transitive dependencies. A transitive dependency is formed when a non-key attribute depends on another non-key attribute, which in turn depends on the primary key. This actually reflects the nature of transitive dependencies.
+
+From the 2NF we have achieved, we have three tables in our library database:
+
+**Books table**
+
+![normalization](/image/blog/normalization/8.png)
+
+**Borrowers table**
+
+![normalization](/image/blog/normalization/9.png)
+
+**Book_borrowings table**
+
+![normalization](/image/blog/normalization/10.png)
+
+2NF structures may seem efficient, but they may have hidden dependencies. Suppose we add a due_date column to the books table. This may seem reasonable at first glance, but it actually introduces a transitive dependency. Specifically:
+
+- The due_date column depends on borrowing_id (a non-key attribute) in the book_borrowings table.
+- Borrowing_id depends on book_id (a primary key) in the books table.
+
+As a result, due_date actually depends on an intermediate non-key attribute borrowing_id, rather than directly on the primary key book_id. This situation violates the requirements of 3NF.
+
+#### What is the solution?
+
+We can move the due_date column to the most appropriate table by updating the book_borrowings table to include due_date and returned_date columns.
+
+Here is the updated table:
+
+![normalization](/image/blog/normalization/11.png)
+
+By placing the due_date column into the book_borrowing table, we have successfully eliminated the transitive dependency.
+
+This means that due_date now directly depends on the composite relationship between book_id and borrower_id. In this context, book_id and borrower_id act as composite foreign keys, and together they form the primary key of the book_borrowings table.
+
+### Boyce-Codd Normal Form (BCNF)
+
+BCNF is based on functional dependencies and it considers all candidate keys in a relation. Functional dependencies (FDs) define the relationships between attributes in a relational database. FDs describe that the value of one column determines the value of another column. Functional dependencies are important because they guide the normalization process by identifying these dependencies and ensuring that data is appropriately distributed across tables.
+
+BCNF is a stricter form of 3NF. It ensures that every determinant (i.e. a set of attributes that uniquely identifies a row) in a table is a candidate key (i.e. the minimum set of attributes that uniquely identifies a row). In other words, all determinants should be able to act as primary keys.
+
+BCNF ensures that every functional dependency (FD) has a superkey as its determinant. That is, if there is a dependency relationship such as X → Y (i.e., X determines Y), then X must be a candidate key (or superkey) in the relationship. It should be noted that X and Y here refer to columns in the data table.
+
+As a construction of 3NF, we have three tables:
+
+**Books table**
+
+![normalization](/image/blog/normalization/12.png)
+
+**Borrowers table**
+
+![normalization](/image/blog/normalization/13.png)
+
+**Book_borrowings table**
+
+![normalization](/image/blog/normalization/14.png)
+
+Although 3NF structure is generally good, there may be hidden determinants in the book_borrowings table. Assuming that a borrower cannot borrow the same book more than once at the same time, the combination of book_id and borrower_id can uniquely identify a borrowing record.
+
+This structure violates BCNF because the combination of book_id and borrower_id is not the primary key of the table (the primary key is actually borrowing_id).
+
+#### What is the solution?
+
+To achieve BCNF, we can choose to decompose the book_borrowings table into two separate tables or use the combination of attributes as the primary key.
+
+Approach 1 (Decomposing Tables)
+
+In this approach, we split the book_borrowings table into two separate tables:
+
+- One table uses borrowing_id as the primary key and contains borrow_date, due_date, and returned_date.
+- Another table is used to associate books and borrowers, with book_id and borrower_id as foreign keys, and may contain other attributes related to the specific borrowing event.
+
+Method 2 (Using a composite attribute set as the primary key)
+
+Another approach is to use book_id and borrower_id as a composite primary key to uniquely identify each borrowing record. However, this approach is limited in that it does not work well if borrowers are allowed to borrow the same book multiple times.
+
+Ultimately, which approach you choose depends on your specific data requirements and how you want to model the borrowing relationship.
+
+### Fourth Normal Form (4NF)
+
+Multi-valued dependencies occur when an attribute can have multiple values, and those values are independent of the primary key. This dependency is more complex, but can be better understood with an example.
+
+The library example we used earlier when explaining other normal forms does not apply to 4NF. 4NF is generally applicable when a single attribute may have multiple dependent attributes that are not directly related to the primary key.
+
+Let's use a different scenario. Imagine a database that stores information about publications. In this database, there is a "publications" table with the following columns: Title, Author, Publication Year, and Keywords.
+
+![normalization](/image/blog/normalization/15.png)
+
+The table structure above violates 4NF because:
+
+- The keywords column has a multi-valued dependency on the primary key Publication_id. This means that a publication can have multiple keywords and these keywords are independent of the unique identifier of the publication.
+
+#### What is the solution?
+
+We can create a separate table.
+
+**Publication_keywords table**
+
+![normalization](/image/blog/normalization/16.png)
+
+The newly created table (Publication_keywords) establishes a many-to-many relationship between publications and keywords. Each publication can have multiple keywords, and each keyword can be associated with multiple publications through the publication_id (foreign key) link.
+
+At this point, we have successfully eliminated multi-valued dependencies and achieved 4NF.
+
+### Fifth Normal Form (5NF)
+
+5NF is the most complex form of normalization designed to eliminate join dependencies. Even if a table has reached 4NF, sometimes it is still necessary to join data from multiple tables to answer certain queries.
+
+In simple terms, 5NF ensures that by joining multiple tables, no additional information is obtained that is not provided in a single table.
+
+When a table has been normalized to 3NF or 4NF, join dependencies are less common, so it is relatively difficult to create a clear and simple example for 5NF.
+
+However, let's look at a scenario where 5NF may be relevant:
+
+Imagine a university database with normalized tables for "Courses" and "Enrollment".
+
+**Courses table**
+
+![normalization](/image/blog/normalization/17.png)
+
+**Enrollments table**
+
+![normalization](/image/blog/normalization/18.png)
+
+Assuming the tables are already in 3NF or 4NF, there may be join dependencies, depending on how the data is stored. For example, the prerequisite requirements for a course are stored in the Courses table as a Prerequisite_Course_id column.
+
+At first glance this may seem to work well. However, consider a query that needs to retrieve the courses a student is enrolled in and their respective prerequisites. In this case, you would need to join the Courses and Enrollment tables, and then potentially join the Courses table to retrieve the prerequisite information.
+
+#### What is the solution?
+
+To potentially eliminate the join dependency and achieve 5NF, we can introduce a separate Course Prerequisites table:
+
+**Course_prerequisite table**
+
+![normalization](/image/blog/normalization/19.png)
+
+This approach separates prerequisite information and allows for efficient retrieval of enrolled courses and their prerequisites in a single join between the "Enrollments" and "Course_precessions" tables.
+
+> Note: We assume that a student can only have one prerequisite per course.
+
+5NF is a very complex and rare type of normalization, so you may not find an application when someone is just starting their data learning journey. However, it will increase knowledge and prepare you for when you encounter complex databases.
+
+## Get Started with Chat2DB Pro
+
+If you're looking for an intuitive, powerful, and AI-driven database management tool, give Chat2DB a try! Whether you're a database administrator, developer, or data analyst, Chat2DB simplifies your work with the power of AI.
+
+Enjoy a 30-day free trial of Chat2DB Pro. Experience all the premium features without any commitment, and see how Chat2DB can revolutionize the way you manage and interact with your databases.
+
+👉 [Start your free trial today](https://chat2db.ai/pricing) and take your database operations to the next level!
