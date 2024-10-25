@@ -1,6 +1,6 @@
 module.exports = {
   apps: [{
-    name: 'Chat2DB 文档', // 应用名称
+    name: 'Chat2DB-Doc', // 应用名称
     script: 'npm',    // 运行脚本
     args: 'run deploy',    // 传递给脚本的参数
     env: {

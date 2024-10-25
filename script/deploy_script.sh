@@ -1,4 +1,5 @@
-
+# 依赖安装
+# pnpm i
 
 # 本地构建
 echo "开始本地构建..."
@@ -10,9 +11,20 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-echo "构建成功，准备传输文件到国外服务器..."
-scp -r .next package.json package-lock.json root@47.89.251.23:/root/Chat2DB-Doc
+echo "构建成功"
 
+# 压缩 .next 目录和 public locales 文件夹
+echo "压缩 .next 目录和 public locales 文件夹..."
+tar -czf deploy.tar.gz .next public locales
 
+echo "传输文件到国外服务器..."
+scp deploy.tar.gz package.json package-lock.json root@47.89.251.23:/root/Chat2DB-Doc
+Asdqwe111
+echo "传输文件到国内服务器..."
+scp deploy.tar.gz package.json package-lock.json root@39.99.250.107:/root/Chat2DB-Doc
 
-# ssh到服务 重启
+echo "在国外服务器上解压文件, 并重启服务"
+ssh root@47.89.251.23 "cd /root/Chat2DB-Doc && rm -rf .next && tar -xzvf deploy.tar.gz --warning=no-unknown-keyword && pm2 restart Chat2DB-Doc"
+
+echo "在国内服务器上解压文件, 并重启服务"
+ssh root@39.99.250.107 "cd /root/Chat2DB-Doc && rm -rf .next && tar -xzvf deploy.tar.gz --warning=no-unknown-keyword && pm2 restart Chat2DB-Doc"
