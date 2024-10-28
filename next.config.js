@@ -5,7 +5,7 @@ const withNextra = require("nextra")({
 });
 
 module.exports = withNextra({
-  basePath: '/resources', // 添加这一行
+  basePath: "/resources", // 添加这一行
 
   i18n: {
     locales: ["zh-CN", "en-US", "ja-JP"],

@@ -19,7 +19,6 @@ tar -czf deploy.tar.gz .next public locales
 
 echo "传输文件到国外服务器..."
 scp deploy.tar.gz package.json package-lock.json root@47.89.251.23:/root/Chat2DB-Doc
-Asdqwe111
 echo "传输文件到国内服务器..."
 scp deploy.tar.gz package.json package-lock.json root@39.99.250.107:/root/Chat2DB-Doc
 
