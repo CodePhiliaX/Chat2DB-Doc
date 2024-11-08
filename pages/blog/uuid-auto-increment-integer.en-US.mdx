@@ -1,0 +1,114 @@
+---
+title: "UUID vs. Auto Increment Integer/Serial: Which is Best for Primary Keys?"
+image: "/blog/image/25.png"
+description: "Choosing between an Auto Increment Integer/Serial or a UUID as primary key takes into account database performance, data replication and merging, security and privacy."
+category: "Guide"
+date: November 8, 2024
+---
+
+# UUID vs. Auto Increment Integer/Serial: Which is Best for Primary Keys?
+
+When designing a new SQL database schema, one of the crucial decisions is choosing the type of primary key. The two most common contenders are UUID and Auto Increment Integer (or Serial in some databases). This choice can have a significant impact on the database's functionality and performance, and it's often difficult to change once the database is in use.
+
+## Auto Increment Integer/Serial
+
+### Overview
+
+Auto Increment Integer/Serial is widely supported by major database engines. For example, MySQL uses AUTO_INCREMENT, PostgreSQL has SERIAL, SQL Server uses IDENTITY, and SQLite uses AUTOINCREMENT.
+
+### Advantages
+
+**Readable**: It is more readable compared to UUID, especially when exposed externally. For instance, an issue id like `issue-123` is much easier to understand than a UUID like `issue-b1e92c3b-a44a-4856-9fe3-925444ac4c23`.
+
+**Less Space**: UUID always occupies 16 bytes, while an Auto Increment Integer stored as Long format takes up 8 bytes. In tables with few columns, the extra space used by a UUID for the primary key can be more noticeable.
+
+### Disadvantages
+
+**Not Suitable for Distributed Systems**: In a distributed system, different hosts may generate the same number, making it unusable as a unique identifier.
+
+**Not Generated on the Fly**: It requires consulting the database to get the next available primary key. In a distributed system, this often means introducing a separate service to generate the sequential number, which can become a single-point-of-failure (SPOF).
+
+**Business Data Exposure**: The latest ID may represent inventory numbers, and attackers could potentially scan the integer range for data leakage. Although this should be prevented with proper access control lists (ACL), it remains a risk.
+
+## UUID
+
+### Overview
+
+The original UUID standard includes 5 formats, with UUIDv1 (timestamp) and UUIDv4 (random) being the most commonly used.
+
+### Advantages
+
+**Globally Unique**: It is highly unlikely to have duplicates, making it useful for systems where unique identification across different environments is crucial. For example, when migrating data between systems, the chance of a collision is only theoretically possible.
+
+**Stateless and Generated on the Fly**: It can be generated without relying on any external state, which is convenient for various applications.
+
+**Sense of Security**: Malicious users cannot easily guess the ID, providing a certain level of security. However, a publicly accessible UUID path may not meet security standards as per the security team's requirements.
+
+**Version 1 UUID and Timestamp**: UUIDv1 stores timestamp information, which can be useful in some cases.
+
+### Disadvantages
+
+**Not Readable**: UUIDs are complex strings of characters and numbers that are difficult for humans to read and understand.
+
+**Not Naturally Sortable by Creation Time**: Although UUIDv1 contains timestamp information, it is encoded in a way that makes it difficult to sort by creation time. The least significant time appears first in a little-endian format, which complicates sorting.
+
+**Performance Impact on Some Databases**: In databases like MySQL and Oracle that use clustered primary keys, using UUIDv1 or UUIDv4 as the primary key can hurt insertion performance. This is because the rows need to be reordered to place the newly inserted row in the correct position within the clustered index. In contrast, PostgreSQL, which uses a heap instead of a clustered primary key, is not affected in this way.
+
+## UUIDv7 - A Compromise Solution
+
+### Overview
+
+UUIDv7 is a new format that was proposed in a draft by IETF in April 2021 and finally approved in May 2024.
+
+### Layout and Features
+
+The layout of UUIDv7 is as follows:
+
+```
+## uuid7 layout
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                            unixts                             |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|unixts |       subsec_a        |  ver  |       subsec_b        |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|var|                   subsec_seq_node                         |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                       subsec_seq_node                         |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+The most significant difference from UUIDv1 is that the first 48 bits (unix_ts_ms) store the big-endian unsigned number of the Unix Epoch timestamp in milliseconds. This makes UUIDs generated later have higher values, facilitating sorting and querying by creation time.
+
+Since UUIDv7 is time-ordered, it reduces the need for random I/O operations when inserting new records in databases, leading to better performance and more efficient indexing.
+
+### Comparison with Other Key Types
+
+**Sortable**: It is sortable, unlike UUIDv1.
+
+**Time Precision**: It has a time precision of milliseconds, similar to UUIDv1's nanosecond precision in a sense that it provides a way to order records based on time.
+
+**Global Unique**: It is globally unique, like other UUID versions.
+
+**Stateless**: It is stateless, like other UUID versions.
+
+**Readable**: It is not as readable as an integer, similar to other UUID versions.
+
+### Expected Adoption
+
+Due to its advantages over previous UUID versions and its ability to address some of the key limitations, it is expected that the industry will gradually converge on UUIDv7 as the primary key for most use cases, replacing bespoke solutions.
+
+## Conclusion
+
+Choosing between UUID and Auto Increment Integer/Serial as a primary key depends on various factors such as the nature of the application, the database system being used, and the requirements for uniqueness, readability, and performance. Auto Increment Integer/
+
+Serial offers readability and less space usage but has limitations in distributed systems and data security. UUID provides global uniqueness and a sense of security but is less readable and can have performance issues in some databases. UUIDv7 seems to be a promising compromise, offering some of the benefits of both while addressing some of the key drawbacks. As the industry evolves, it is expected that UUIDv7 will gain more popularity as a primary key option.
+
+## Get Started with Chat2DB Pro
+
+If you're looking for an intuitive, powerful, and AI-driven database management tool, give Chat2DB a try! Whether you're a database administrator, developer, or data analyst, Chat2DB simplifies your work with the power of AI.
+
+Enjoy a 30-day free trial of Chat2DB Pro. Experience all the premium features without any commitment, and see how Chat2DB can revolutionize the way you manage and interact with your databases.
+
+👉 [Start your free trial today](https://chat2db.ai/pricing) and take your database operations to the next level!
