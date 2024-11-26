@@ -60,10 +60,10 @@ export default {
     locale,
     text,
   })),
-  // feedback: false,
-  docsRepositoryBase: "https://github.com/codePhiliaX/chat2db-doc/tree/main/docs",
-  // feedback:
-  //   "https://github.com/codePhiliaX/chat2db-doc/issues/new?title=Feedback%20for%20%E2%80%9CChangelog%E2%80%9D&labels=feedback",
+
+  docsRepositoryBase:
+    "https://github.com/codePhiliaX/chat2db-doc/tree/main/docs",
+
   editLink: false,
   nextThemes: {
     defaultTheme: "dark",
