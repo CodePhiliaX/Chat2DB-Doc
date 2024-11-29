@@ -1,8 +1,3 @@
-import { useRouter } from "next/router";
-import { useConfig } from "nextra-theme-docs";
-import useLocalesMap from "./components/use-locales-map";
-import { languageMap, tableOfContentsTitleMap } from "./translations/text";
-
 export default {
   logo: (
     <div style={{ display: "flex", alignItems: "center" }}>
@@ -14,7 +9,7 @@ export default {
       <span style={{ fontWeight: 700, fontSize: "20px" }}>Chat2DB</span>
     </div>
   ),
-  logoLink: "https://chat2db.ai",
+  logoLink: "https://chat2db-ai.com",
   project: {
     link: "https://github.com/codePhiliaX/chat2db",
   },
@@ -29,14 +24,10 @@ export default {
   },
   toc: {
     float: true,
-    title: () => useLocalesMap(tableOfContentsTitleMap),
+    title: () => "目录",
   },
   head: () => {
-    const { locale } = useRouter();
-    const des =
-      locale === "en-US"
-        ? "An intelligent and versatile general-purpose SQL client and reporting tool for databases which integrates AI capabilities."
-        : "一个集成了AI功能的通用SQL客户端和报表工具。";
+    const des = "Chat2DB 是一个集成了AI功能的SQL客户端和BI分析工具";
     return (
       <>
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -49,17 +40,17 @@ export default {
     text: (
       <span>
         MIT {new Date().getFullYear()} ©{" "}
-        <a href="https://chat2db.ai" target="_blank">
+        <a href="https://chat2db-ai.com" target="_blank">
           Chat2DB
         </a>
         .
       </span>
     ),
   },
-  i18n: Object.entries(languageMap).map(([locale, text]) => ({
-    locale,
-    text,
-  })),
+  // i18n: Object.entries(languageMap).map(([locale, text]) => ({
+  //   locale,
+  //   text,
+  // })),
 
   docsRepositoryBase:
     "https://github.com/codePhiliaX/chat2db-doc/tree/main/docs",

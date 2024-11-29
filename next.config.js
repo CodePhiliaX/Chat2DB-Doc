@@ -5,23 +5,13 @@ const withNextra = require("nextra")({
 });
 
 module.exports = withNextra({
-  basePath: "/resources", // 添加这一行
-
-  i18n: {
-    locales: ["zh-CN", "en-US", "ja-JP"],
-    defaultLocale: "en-US",
-  },
-  redirects: () => {
+  basePath: "/resources",
+  async redirects() {
     return [
       {
         source: "/",
-        destination: "/resources",
-        statusCode: 301,
-      },
-      {
-        source: "/resources",
         destination: "/docs/start-guide/getting-started",
-        statusCode: 301,
+        permanent: true,
       },
     ];
   },

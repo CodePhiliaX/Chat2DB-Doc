@@ -1,11 +1,9 @@
 import { getPagesUnderRoute } from "nextra/context";
-import filterRouteLocale from "nextra/filter-route-locale";
 import Link from "next/link";
 import { useRouter } from "next/router";
-import { useEffect } from "react";
 
 export default function BlogIndex({ more = "Read more" }) {
-  const { locale, defaultLocale, basePath } = useRouter();
+  const { basePath } = useRouter();
 
   // 解析日期字符串的辅助函数
   function parseDate(dateStr) {
@@ -25,7 +23,7 @@ export default function BlogIndex({ more = "Read more" }) {
 
   return (
     <div className="py-10 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-      {filterRouteLocale(getPagesUnderRoute("/blog"), locale, defaultLocale)
+      {getPagesUnderRoute("/blog")
         .sort((a, b) => {
           const dateA = parseDate(a.frontMatter?.date);
           const dateB = parseDate(b.frontMatter?.date);
