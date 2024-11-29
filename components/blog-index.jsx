@@ -25,7 +25,7 @@ export default function BlogIndex({ more = "Read more" }) {
 
   return (
     <div className="py-10 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-      {filterRouteLocale(getPagesUnderRoute("/blog"), locale, defaultLocale)
+      {getPagesUnderRoute("/blog")
         .sort((a, b) => {
           const dateA = parseDate(a.frontMatter?.date);
           const dateB = parseDate(b.frontMatter?.date);

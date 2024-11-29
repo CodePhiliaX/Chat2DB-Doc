@@ -1,7 +1,4 @@
 import { useRouter } from "next/router";
-import { useConfig } from "nextra-theme-docs";
-import useLocalesMap from "./components/use-locales-map";
-import { languageMap, tableOfContentsTitleMap } from "./translations/text";
 
 export default {
   logo: (
@@ -29,14 +26,13 @@ export default {
   },
   toc: {
     float: true,
-    title: () => useLocalesMap(tableOfContentsTitleMap),
+    title: () => "Table of Content",
   },
   head: () => {
     const { locale } = useRouter();
     const des =
-      locale === "en-US"
-        ? "An intelligent and versatile general-purpose SQL client and reporting tool for databases which integrates AI capabilities."
-        : "一个集成了AI功能的通用SQL客户端和报表工具。";
+      "An intelligent and versatile general-purpose SQL client and reporting tool for databases which integrates AI capabilities.";
+
     return (
       <>
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -56,10 +52,10 @@ export default {
       </span>
     ),
   },
-  i18n: Object.entries(languageMap).map(([locale, text]) => ({
-    locale,
-    text,
-  })),
+  // i18n: Object.entries(languageMap).map(([locale, text]) => ({
+  //   locale,
+  //   text,
+  // })),
 
   docsRepositoryBase:
     "https://github.com/codePhiliaX/chat2db-doc/tree/main/docs",
