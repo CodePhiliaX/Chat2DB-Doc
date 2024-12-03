@@ -41,7 +41,9 @@ export default function BlogIndex({ more = "Read more" }) {
           >
             {page.frontMatter?.image && (
               <img
-                src={`${basePath}${page.frontMatter.image}`}
+                src={page.frontMatter.image.startsWith('http') 
+                  ? page.frontMatter.image 
+                  : `${basePath}${page.frontMatter.image}`}
                 alt={page.frontMatter?.title || page.meta?.title || page.name}
                 className="w-full max-h-40  object-cover"
               />
