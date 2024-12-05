@@ -22,7 +22,7 @@ export default function BlogIndex({ more = "Read more" }) {
   }
 
   return (
-    <div className="py-10 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+    <div className="py-10 px-10 md:px-16 lg:px-28 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
       {getPagesUnderRoute("/blog")
         .sort((a, b) => {
           const dateA = parseDate(a.frontMatter?.date);
