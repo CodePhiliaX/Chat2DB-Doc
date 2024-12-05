@@ -24,7 +24,7 @@ export default function BlogIndex({ more = "Read more" }) {
   }
 
   return (
-    <div className="py-10 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+    <div className="px-10 py-16 grid grid-cols-1 md:px-16 md:grid-cols-2 lg:grid-cols-3 lg:px-28 gap-6">
       {getPagesUnderRoute("/blog")
         .sort((a, b) => {
           const dateA = parseDate(a.frontMatter?.date);
@@ -34,7 +34,7 @@ export default function BlogIndex({ more = "Read more" }) {
         .map((page) => (
           <div
             key={page.route}
-            className="hover-2 border-transparent  flex flex-col rounded-lg overflow-hidden cursor-pointer transition-transform duration-300 ease-in-out hover:-translate-y-2 hover:border-2 hover:border-blue-500"
+            className="border-2 border-transparent flex flex-col rounded-lg overflow-hidden cursor-pointer transition-transform duration-300 ease-in-out hover:-translate-y-2 hover:border-blue-500"
             onClick={() => {
               window.open(page.route, "_self");
             }}
@@ -45,7 +45,7 @@ export default function BlogIndex({ more = "Read more" }) {
                   ? page.frontMatter.image 
                   : `${basePath}${page.frontMatter.image}`}
                 alt={page.frontMatter?.title || page.meta?.title || page.name}
-                className="w-full max-h-40  object-cover"
+                className="w-full max-h-72  object-cover"
               />
             )}
             <div className="flex-1 py-2 px-4 flex flex-col justify-between">
