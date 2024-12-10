@@ -23,6 +23,21 @@ export default {
   useNextSeoProps() {
     return {
       titleTemplate: "%s – Chat2DB",
+      description:
+        "An intelligent and versatile general-purpose SQL client and reporting tool for databases which integrates AI capabilities.",
+      openGraph: {
+        title: "Chat2DB",
+        description:
+          "An intelligent and versatile general-purpose SQL client and reporting tool for databases which integrates AI capabilities.",
+        images: [
+          {
+            url: "https://cdn.chat2db-ai.com/img/logo.svg",
+            width: 1200,
+            height: 630,
+            alt: "Chat2DB",
+          },
+        ],
+      },
     };
   },
   toc: {
@@ -30,7 +45,7 @@ export default {
     title: () => "Table of Content",
   },
   head: () => {
-    const { locale } = useRouter();
+    const { asPath, basePath, locale } = useRouter();
     const des =
       "An intelligent and versatile general-purpose SQL client and reporting tool for databases which integrates AI capabilities.";
 
@@ -39,6 +54,21 @@ export default {
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <meta property="og:title" content="Chat2DB" />
         <meta property="og:description" content={des} />
+        <link rel="canonical" href={`https://chat2db.ai/${basePath}${asPath}`} />
+        <script type="application/ld+json">
+          {JSON.stringify({
+            "@context": "https://schema.org",
+            "@type": "WebSite",
+            url: "https://chat2db.ai",
+            name: "Chat2DB",
+            description: des,
+            potentialAction: {
+              "@type": "SearchAction",
+              target: "https://chat2db.ai/search?q={search_term_string}",
+              "query-input": "required name=search_term_string",
+            },
+          })}
+        </script>
       </>
     );
   },
