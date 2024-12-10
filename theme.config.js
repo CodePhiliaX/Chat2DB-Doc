@@ -54,7 +54,7 @@ export default {
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <meta property="og:title" content="Chat2DB" />
         <meta property="og:description" content={des} />
-        <link rel="canonical" href={`https://chat2db.ai/${basePath}${asPath}`} />
+        <link rel="canonical" href={`https://chat2db.ai${basePath}${asPath}`} />
         <script type="application/ld+json">
           {JSON.stringify({
             "@context": "https://schema.org",
