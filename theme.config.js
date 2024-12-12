@@ -1,5 +1,6 @@
 import { useRouter } from "next/router";
 import { DiscordIcon, GitHubIcon } from "nextra/icons";
+import { useConfig } from 'nextra-theme-docs'
 
 export default {
   logo: (
@@ -21,22 +22,30 @@ export default {
   },
 
   useNextSeoProps() {
+    const { asPath, basePath } = useRouter();
+    const { frontMatter } = useConfig()
+    const { title, description, image, category, date, author = "Chat2DB Team" } = frontMatter;
     return {
       titleTemplate: "%s – Chat2DB",
-      description:
-        "An intelligent and versatile general-purpose SQL client and reporting tool for databases which integrates AI capabilities.",
+      description: description,
       openGraph: {
-        title: "Chat2DB",
-        description:
-          "An intelligent and versatile general-purpose SQL client and reporting tool for databases which integrates AI capabilities.",
+        title: title || "Chat2DB",
+        description: description || "An intelligent and versatile general-purpose SQL client and reporting tool for databases which integrates AI capabilities.",
+        type: "article",
+        url: `https://chat2db.ai${basePath}${asPath}`,
         images: [
           {
-            url: "https://cdn.chat2db-ai.com/img/logo.svg",
+            url: image || "https://cdn.chat2db-ai.com/img/logo.svg",
             width: 1200,
             height: 630,
-            alt: "Chat2DB",
+            alt: title || "Chat2DB",
           },
         ],
+        article: {
+          publishedTime: date,
+          authors: [author],
+          tags: [category],
+        }
       },
     };
   },
@@ -45,28 +54,47 @@ export default {
     title: () => "Table of Content",
   },
   head: () => {
-    const { asPath, basePath, locale } = useRouter();
-    const des =
-      "An intelligent and versatile general-purpose SQL client and reporting tool for databases which integrates AI capabilities.";
+    const { asPath, basePath } = useRouter();
+    const { frontMatter } = useConfig()
+    const des = frontMatter.description || "An intelligent and versatile general-purpose SQL client and reporting tool for databases which integrates AI capabilities.";
 
     return (
       <>
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <meta property="og:title" content="Chat2DB" />
+        <meta property="og:title" content={frontMatter.title || 'Chat2DB'} />
         <meta property="og:description" content={des} />
+        <meta property="article:published_time" content={frontMatter.date} />
+        <meta property="article:author" content={frontMatter.author} />
+        <meta property="article:tag" content={frontMatter.category} />
         <link rel="canonical" href={`https://chat2db.ai${basePath}${asPath}`} />
         <script type="application/ld+json">
           {JSON.stringify({
             "@context": "https://schema.org",
-            "@type": "WebSite",
-            url: "https://chat2db.ai",
-            name: "Chat2DB",
+            "@type": "Article",
+            url: `https://chat2db.ai${basePath}${asPath}`,
+            name: frontMatter.title || "Chat2DB",
+            headline: frontMatter.title,
             description: des,
+            image: frontMatter.image || "https://cdn.chat2db-ai.com/img/logo.svg",
+            datePublished: frontMatter.date,
+            author: {
+              "@type": "Person",
+              name: frontMatter.author || "Chat2DB Team"
+            },
+            publisher: {
+              "@type": "Organization",
+              name: "Chat2DB",
+              logo: {
+                "@type": "ImageObject",
+                url: "https://cdn.chat2db-ai.com/img/logo.svg"
+              }
+            },
+            articleSection: frontMatter.category,
             potentialAction: {
               "@type": "SearchAction",
               target: "https://chat2db.ai/search?q={search_term_string}",
               "query-input": "required name=search_term_string",
-            },
+            }
           })}
         </script>
       </>
