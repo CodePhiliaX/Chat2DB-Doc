@@ -16,7 +16,7 @@ export function Author({ name, link }) {
         className="mx-1 text-current hover:text-blue-600 transition-colors duration-200 flex items-center gap-2"
       >
         <img 
-          src={`/author/${name}.png`} 
+          src={`/resources/author/${name}.png`} 
           alt="Chat2DB"
           className="w-4 h-4 object-contain rounded-full" 
         />
