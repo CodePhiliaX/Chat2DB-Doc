@@ -1,6 +1,6 @@
 export default function Authors({ date, children, by = "by" }) {
   return (
-    <div className="mt-4 mb-16 text-gray-500 text-sm">
+    <div className="mt-3 mb-12 text-gray-600 text-sm flex items-center gap-1">
       {date} {by} {children}
     </div>
   );
@@ -8,14 +8,18 @@ export default function Authors({ date, children, by = "by" }) {
 
 export function Author({ name, link }) {
   return (
-    <span className="after:content-[','] last:after:content-['']">
+    <span className="after:content-[','] last:after:content-[''] inline-flex items-center">
       <a
         key={name}
         href={link}
         target="_blank"
-        // style={{ textUnderlinePosition: "under" }}
-        className="mx-1 text-current underline [text-underline-position:from-font] decoration-from-font"
+        className="mx-1 text-current hover:text-blue-600 transition-colors duration-200 flex items-center gap-2"
       >
+        <img 
+          src={`/author/${name}.png`} 
+          alt="Chat2DB"
+          className="w-4 h-4 object-contain rounded-full" 
+        />
         {name}
       </a>
     </span>
