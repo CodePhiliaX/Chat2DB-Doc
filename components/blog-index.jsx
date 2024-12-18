@@ -32,18 +32,18 @@ export default function BlogIndex({ more = "Read more" }) {
           return dateB - dateA; // 降序排序，新的日期在前
         })
         .map((page) => (
-          <div
+          <Link
             key={page.route}
+            href={`${page.route}`}
             className="border-2 border-transparent flex flex-col rounded-lg overflow-hidden cursor-pointer transition-transform duration-300 ease-in-out hover:-translate-y-2 hover:border-blue-500"
-            onClick={() => {
-              window.open(page.route, "_self");
-            }}
           >
             {page.frontMatter?.image && (
               <img
-                src={page.frontMatter.image.startsWith('http') 
-                  ? page.frontMatter.image 
-                  : `${basePath}${page.frontMatter.image}`}
+                src={
+                  page.frontMatter.image.startsWith("http")
+                    ? page.frontMatter.image
+                    : `${basePath}${page.frontMatter.image}`
+                }
                 alt={page.frontMatter?.title || page.meta?.title || page.name}
                 className="w-full max-h-72  object-cover"
               />
@@ -81,7 +81,7 @@ export default function BlogIndex({ more = "Read more" }) {
                 {page.frontMatter?.date}
               </div>
             </div>
-          </div>
+          </Link>
         ))}
     </div>
   );
