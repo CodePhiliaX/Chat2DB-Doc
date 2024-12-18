@@ -18,7 +18,7 @@ export default {
     link: "https://github.com/codePhiliaX/chat2db",
   },
   chat: {
-    link: "https://discord.gg/uNjb3n5JVN",
+    link: "https://discord.gg/cKt72wcfVp",
   },
 
   useNextSeoProps() {
@@ -122,7 +122,7 @@ export default {
           >
             <div style={{ display: "flex", gap: "20px" }}>
               <a
-                href="https://discord.gg/uNjb3n5JVN"
+                href="https://discord.gg/cKt72wcfVp"
                 target="_blank"
                 rel="noopener noreferrer"
               >
