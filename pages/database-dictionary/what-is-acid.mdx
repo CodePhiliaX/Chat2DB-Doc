@@ -1,0 +1,102 @@
+---
+title: "What is ACID (Atomicity, Consistency, Isolation, Durability)"
+description: "ACID stands for Atomicity, Consistency, Isolation, Durability. These four properties are fundamental to ensuring reliable database transactions and maintaining data integrity."
+date: December 24, 2024
+---
+
+# What is ACID (Atomicity, Consistency, Isolation, Durability)
+
+## Introduction to ACID Properties in Database Systems
+
+ACID stands for Atomicity, Consistency, Isolation, Durability. These four properties are fundamental to ensuring reliable database transactions and maintaining data integrity. ACID-compliant databases guarantee that transactions are processed reliably even in the event of errors, power failures, or other system issues. In this article, we will delve into each property and provide code examples to illustrate how they work.
+
+## Atomicity
+
+### Ensuring All-or-Nothing Transactions
+
+Atomicity ensures that a transaction is treated as a single, indivisible unit of work. If any part of the transaction fails, the entire transaction is rolled back, leaving the database unchanged. This guarantees that partial updates do not occur, maintaining the integrity of the data.
+
+#### Example: Bank Transfer Transaction
+
+```SQL
+BEGIN TRANSACTION;
+
+UPDATE accounts SET balance = balance - 100 WHERE account_id = 1;
+UPDATE accounts SET balance = balance + 100 WHERE account_id = 2;
+COMMIT;
+```
+
+In this example, if the first `UPDATE` statement succeeds but the second one fails (for instance, due to insufficient funds), the entire transaction will be rolled back, ensuring that no changes are made to either account.
+
+## Consistency
+
+### Maintaining Data Integrity
+
+Consistency ensures that a transaction brings the database from one valid state to another, adhering to predefined rules such as constraints, cascades, and triggers. This property prevents the database from entering an invalid state due to incomplete or erroneous transactions.
+
+#### Example: Enforcing Unique Constraints
+
+```SQL
+CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    username VARCHAR(50) UNIQUE NOT NULL
+);
+-- Attempting to insert duplicate usernames will fail
+INSERT INTO users (username) VALUES ('alice');
+INSERT INTO users (username) VALUES ('alice'); -- This will violate the unique constraint
+```
+
+If the second `INSERT` statement tries to add a duplicate username, it will fail, ensuring that the `users` table remains consistent with its defined constraints.
+
+## Isolation
+
+### Handling Concurrent Transactions Safely
+
+Isolation ensures that concurrent transactions do not interfere with each other. Each transaction appears to execute in isolation, preventing race conditions and ensuring that transactions can run simultaneously without corrupting the data.
+
+#### Example: Handling Concurrent Updates
+
+```SQL
+SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+
+BEGIN TRANSACTION;
+
+SELECT * FROM inventory WHERE product_id = 1 FOR UPDATE; -- Locks the row
+UPDATE inventory SET stock = stock - 1 WHERE product_id = 1;
+
+COMMIT;
+```
+
+Using the `SERIALIZABLE` isolation level, this transaction locks the row being updated, preventing other transactions from modifying it until the current transaction completes. This ensures that multiple transactions accessing the same data do not conflict with each other.
+
+## Durability
+
+### Ensuring Persistence After Commit
+
+Durability guarantees that once a transaction has been committed, it will remain so, even in the case of system failure. The database system ensures that committed transactions are stored on non-volatile storage, making them persistent and recoverable.
+
+#### Example: Ensuring Data Persistence
+
+```SQL
+BEGIN TRANSACTION;
+UPDATE orders SET status = 'Shipped' WHERE order_id = 1001;
+
+COMMIT;
+```
+
+Once the `COMMIT` statement is executed, the changes to the `orders` table are written to disk, ensuring that even if the system crashes immediately afterward, the transaction's effects are preserved.
+
+---
+
+## Chat2DB - AI Text2SQL Tool for Easy Database Management
+
+[![Click to use](/image/blog/chat2db.png)](https://app.chat2db.ai/)
+
+## What can Chat2DB do?
+
+- [AI SQL Editor](https://chat2db.ai/feature/AI%20SQL%20Editor)
+- [AI SQL Query Generator](https://chat2db.ai/feature/AI%20SQL%20Query%20Generator)
+- [Analyze Excel Data with AI](https://chat2db.ai/feature/Analyze%20Excel%20Data%20with%20AI)
+- [Best AI Tool for Data Analysis](https://chat2db.ai/feature/Best%20AI%20Tool%20for%20Data%20Analysis)
+- [AI Dashboard with Chat2DB](https://chat2db.ai/feature/AI%20Dashboard%20with%20Chat2DB)
+- [AI Database Client](https://chat2db.ai/feature/AI%20Database%20Client)

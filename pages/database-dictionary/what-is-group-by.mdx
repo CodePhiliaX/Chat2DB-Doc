@@ -1,0 +1,157 @@
+---
+title: "What is GROUP BY"
+description: "The GROUP BY clause in SQL is used to group rows that have the same values in specified columns into summary rows."
+date: December 24, 2024
+---
+
+# What is GROUP BY
+
+## Introduction to GROUP BY
+
+The **GROUP BY** clause in SQL is used to group rows that have the same values in specified columns into summary rows. This allows you to perform aggregate functions (such as COUNT, SUM, AVG, MAX, MIN) on those groups. The `GROUP BY` clause is commonly used in conjunction with aggregate functions to summarize data and gain insights from it.
+
+### Key Characteristics
+
+- **Aggregation:** Groups rows based on one or more columns.
+- **Summary Data:** Produces summarized data by applying aggregate functions.
+- **Distinct Values:** Ensures that each group contains distinct values for the grouped columns.
+
+## Syntax
+
+```sql
+SELECT column1, column2, aggregate_function(column3)
+FROM table_name
+WHERE condition
+GROUP BY column1, column2;
+```
+
+### Explanation
+
+- **column1, column2:** Columns to group by.
+- **aggregate_function(column3):** Function applied to another column to produce a single value per group.
+- **table_name:** The table from which to retrieve data.
+- **WHERE condition:** Optional condition to filter rows before grouping.
+
+## Example: Using GROUP BY
+
+### Scenario
+
+Consider a table `Orders` with the following columns:
+
+| order_id | customer_id | product_id | quantity | order_date |
+|----------|-------------|------------|----------|------------|
+| 1        | 101         | 501        | 2        | 2024-01-01 |
+| 2        | 102         | 502        | 1        | 2024-01-01 |
+| 3        | 101         | 501        | 3        | 2024-01-02 |
+| 4        | 103         | 503        | 5        | 2024-01-03 |
+
+### Example 1: Grouping by Customer
+
+To find the total quantity of orders placed by each customer:
+
+```sql
+SELECT 
+    customer_id, 
+    SUM(quantity) AS total_quantity
+FROM 
+    Orders
+GROUP BY 
+    customer_id;
+```
+
+#### Result
+
+| customer_id | total_quantity |
+|-------------|----------------|
+| 101         | 5              |
+| 102         | 1              |
+| 103         | 5              |
+
+### Explanation
+
+- Groups the rows by `customer_id`.
+- Uses `SUM(quantity)` to calculate the total quantity ordered by each customer.
+
+### Example 2: Grouping by Product and Date
+
+To find the total quantity sold for each product on each date:
+
+```sql
+SELECT 
+    product_id, 
+    order_date, 
+    SUM(quantity) AS total_quantity
+FROM 
+    Orders
+GROUP BY 
+    product_id, 
+    order_date;
+```
+
+#### Result
+
+| product_id | order_date | total_quantity |
+|------------|------------|----------------|
+| 501        | 2024-01-01 | 2              |
+| 501        | 2024-01-02 | 3              |
+| 502        | 2024-01-01 | 1              |
+| 503        | 2024-01-03 | 5              |
+
+### Explanation
+
+- Groups the rows by `product_id` and `order_date`.
+- Uses `SUM(quantity)` to calculate the total quantity sold for each product on each date.
+
+### Example 3: Combining with WHERE Clause
+
+To find the total quantity of orders placed by each customer only for orders after January 1, 2024:
+
+```sql
+SELECT 
+    customer_id, 
+    SUM(quantity) AS total_quantity
+FROM 
+    Orders
+WHERE 
+    order_date > '2024-01-01'
+GROUP BY 
+    customer_id;
+```
+
+#### Result
+
+| customer_id | total_quantity |
+|-------------|----------------|
+| 101         | 3              |
+| 103         | 5              |
+
+### Explanation
+
+- Filters the rows to include only those with `order_date > '2024-01-01'`.
+- Groups the remaining rows by `customer_id`.
+- Uses `SUM(quantity)` to calculate the total quantity ordered by each customer after the specified date.
+
+## Benefits of Using GROUP BY
+
+- **Data Summarization:** Provides a way to summarize large datasets into meaningful summaries.
+- **Insight Generation:** Helps in generating insights from data by aggregating and analyzing specific segments.
+- **Performance Optimization:** Can improve query performance by reducing the amount of data processed and returned.
+
+## Conclusion
+
+The `GROUP BY` clause is a powerful tool in SQL for summarizing and analyzing data. By grouping rows based on common attributes and applying aggregate functions, it enables users to extract valuable insights and make informed decisions from their data.
+
+---
+
+## Chat2DB - AI Text2SQL Tool for Easy Database Management
+
+[![Click to use](/image/blog/chat2db.png)](https://app.chat2db.ai/)
+
+## What can Chat2DB do?
+
+- [AI SQL Editor](https://chat2db.ai/feature/AI%20SQL%20Editor)
+- [AI SQL Query Generator](https://chat2db.ai/feature/AI%20SQL%20Query%20Generator)
+- [Analyze Excel Data with AI](https://chat2db.ai/feature/Analyze%20Excel%20Data%20with%20AI)
+- [Best AI Tool for Data Analysis](https://chat2db.ai/feature/Best%20AI%20Tool%20for%20Data%20Analysis)
+- [AI Dashboard with Chat2DB](https://chat2db.ai/feature/AI%20Dashboard%20with%20Chat2DB)
+- [AI Database Client](https://chat2db.ai/feature/AI%20Database%20Client)

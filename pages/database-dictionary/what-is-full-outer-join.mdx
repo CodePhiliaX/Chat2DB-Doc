@@ -1,0 +1,111 @@
+---
+title: "What is a Full Outer Join"
+description: "A Full Outer Join is a type of SQL join that returns all records when there is a match in either the left table or the right table."
+date: December 24, 2024
+---
+
+# What is a Full Outer Join
+
+## Introduction to Full Outer Join
+
+A **Full Outer Join** is a type of SQL join that returns all records when there is a match in either the left table or the right table. It combines the results of both a left outer join and a right outer join, ensuring that all records from both tables are included in the result set. If there is no match, the result will include NULL values for columns from the table that has no matching row.
+
+### Key Characteristics
+
+- **Inclusivity:** Includes all records from both tables.
+- **NULL Handling:** Fills in NULLs for missing matches between tables.
+- **Versatility:** Useful for scenarios where you need a comprehensive view of data from two tables regardless of matching criteria.
+
+## Syntax
+
+```sql
+SELECT columns
+FROM table1
+FULL OUTER JOIN table2
+ON table1.common_column = table2.common_column;
+```
+
+## Example: Full Outer Join
+
+### Scenario
+
+Consider two tables: `Customers` and `Orders`.
+
+#### Customers Table
+
+| customer_id | first_name | last_name |
+|-------------|------------|-----------|
+| 1           | John       | Doe       |
+| 2           | Jane       | Smith     |
+| 3           | Alice      | Johnson   |
+
+#### Orders Table
+
+| order_id | order_date | customer_id |
+|----------|------------|-------------|
+| 101      | 2024-01-15 | 1           |
+| 102      | 2024-01-20 | 2           |
+| 103      | 2024-02-01 | 4           |
+
+### Query
+
+```sql
+SELECT 
+    c.customer_id, 
+    c.first_name, 
+    c.last_name, 
+    o.order_id, 
+    o.order_date
+FROM 
+    Customers c
+FULL OUTER JOIN 
+    Orders o
+ON 
+    c.customer_id = o.customer_id;
+```
+
+### Result
+
+| customer_id | first_name | last_name | order_id | order_date |
+|-------------|------------|-----------|----------|------------|
+| 1           | John       | Doe       | 101      | 2024-01-15 |
+| 2           | Jane       | Smith     | 102      | 2024-01-20 |
+| 3           | Alice      | Johnson   | NULL     | NULL       |
+| NULL        | NULL       | NULL      | 103      | 2024-02-01 |
+
+### Explanation
+
+- **Row 1 & 2:** Matched records from both tables.
+- **Row 3:** A customer with no orders, showing NULL in order-related columns.
+- **Row 4:** An order with no corresponding customer, showing NULL in customer-related columns.
+
+## Benefits of Using Full Outer Join
+
+- **Comprehensive Data View:** Provides a complete dataset by including all records from both tables.
+- **Handling Missing Data:** Useful for identifying discrepancies or gaps in related datasets.
+- **Analytical Insights:** Facilitates deeper analysis by capturing all possible relationships between tables.
+
+## Considerations
+
+- **Performance:** Can be slower on large datasets due to the inclusion of all records.
+- **Data Volume:** May result in larger result sets, especially if there are many unmatched rows.
+- **Database Support:** Not all databases support full outer joins natively; alternatives like union of left and right joins might be required.
+
+## Conclusion
+
+A Full Outer Join is a powerful tool for combining data from two tables, ensuring that all records are included regardless of matching criteria. By understanding its syntax and characteristics, developers can effectively utilize this join type to achieve comprehensive data integration and analysis.
+
+---
+
+## Chat2DB - AI Text2SQL Tool for Easy Database Management
+
+[![Click to use](/image/blog/chat2db.png)](https://app.chat2db.ai/)
+
+## What can Chat2DB do?
+
+- [AI SQL Editor](https://chat2db.ai/feature/AI%20SQL%20Editor)
+- [AI SQL Query Generator](https://chat2db.ai/feature/AI%20SQL%20Query%20Generator)
+- [Analyze Excel Data with AI](https://chat2db.ai/feature/Analyze%20Excel%20Data%20with%20AI)
+- [Best AI Tool for Data Analysis](https://chat2db.ai/feature/Best%20AI%20Tool%20for%20Data%20Analysis)
+- [AI Dashboard with Chat2DB](https://chat2db.ai/feature/AI%20Dashboard%20with%20Chat2DB)
+- [AI Database Client](https://chat2db.ai/feature/AI%20Database%20Client)

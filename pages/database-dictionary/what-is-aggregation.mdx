@@ -1,0 +1,124 @@
+---
+title: "What is Aggregation"
+description: "Aggregation involves summarizing data to provide insights and facilitate analysis. It typically groups data based on one or more columns and applies aggregate functions."
+date: December 24, 2024
+---
+
+# What is Aggregation
+
+## Introduction to Aggregation in Database Systems
+
+Aggregation involves summarizing data to provide insights and facilitate analysis. It typically groups data based on one or more columns and applies aggregate functions like `SUM()`, `COUNT()`, `AVG()`, `MIN()`, and `MAX()`.
+
+## Common Aggregate Functions
+
+### SUM()
+
+Calculates the sum of values in a specified column.
+
+**Example: Calculating Total Sales**
+
+```SQL
+SELECT SUM(sales_amount) AS total_sales
+FROM sales;
+```
+
+### COUNT()
+
+Counts the number of items in a group.
+
+**Example: Counting Orders**
+
+```SQL
+SELECT COUNT(order_id) AS total_orders
+FROM orders;
+```
+
+### AVG()
+
+Computes the average value of a numeric column.
+
+**Example: Average Product Price**
+
+```SQL
+SELECT AVG(price) AS avg_price
+FROM products;
+```
+
+### MIN()
+
+Finds the minimum value in a specified column.
+
+**Example: Finding the Lowest Salary**
+
+```SQL
+SELECT MIN(salary) AS lowest_salary
+FROM employees;
+```
+
+### MAX()
+
+Finds the maximum value in a specified column.
+
+**Example: Finding the Highest Salary**
+
+```SQL
+SELECT MAX(salary) AS highest_salary
+FROM employees;
+```
+
+## Grouping Data with GROUP BY
+
+Groups data based on one or more columns for computing aggregate values.
+
+**Example: Total Sales by Region**
+
+```SQL
+SELECT region, SUM(sales_amount) AS total_sales
+FROM sales
+GROUP BY region;
+```
+
+## Filtering Aggregated Results with HAVING
+
+Applies conditions to groups after aggregation.
+
+**Example: Regions with Total Sales Greater Than $10,000**
+
+```SQL
+SELECT region, SUM(sales_amount) AS total_sales
+FROM sales
+GROUP BY region
+HAVING SUM(sales_amount) > 10000;
+```
+
+## Combining Aggregations with Other Operations
+
+Example: Using Subqueries for Aggregation
+
+Finds the top-performing product within each category.
+
+```SQL
+SELECT category, product_name, sales_amount
+FROM (
+    SELECT category, product_name, sales_amount,
+           RANK() OVER (PARTITION BY category ORDER BY sales_amount DESC) as rank
+    FROM sales
+) ranked_sales
+WHERE rank = 1;
+```
+
+---
+
+## Chat2DB - AI Text2SQL Tool for Easy Database Management
+
+[![Click to use](/image/blog/chat2db.png)](https://app.chat2db.ai/)
+
+## What can Chat2DB do?
+
+- [AI SQL Editor](https://chat2db.ai/feature/AI%20SQL%20Editor)
+- [AI SQL Query Generator](https://chat2db.ai/feature/AI%20SQL%20Query%20Generator)
+- [Analyze Excel Data with AI](https://chat2db.ai/feature/Analyze%20Excel%20Data%20with%20AI)
+- [Best AI Tool for Data Analysis](https://chat2db.ai/feature/Best%20AI%20Tool%20for%20Data%20Analysis)
+- [AI Dashboard with Chat2DB](https://chat2db.ai/feature/AI%20Dashboard%20with%20Chat2DB)
+- [AI Database Client](https://chat2db.ai/feature/AI%20Database%20Client)

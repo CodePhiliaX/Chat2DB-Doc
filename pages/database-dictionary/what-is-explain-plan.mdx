@@ -1,0 +1,80 @@
+---
+title: "What is EXPLAIN Plan"
+description: "EXPLAIN Plan is a command in SQL used to display the execution plan of a query, showing how the database engine plans to execute the query, including the order of operations and indexes used, which helps in optimizing performance."
+date: December 24, 2024
+---
+
+# What is EXPLAIN Plan
+EXPLAIN Plan is a command in SQL used to display the execution plan of a query, showing how the database engine plans to execute the query, including the order of operations and indexes used, which helps in optimizing performance.
+
+## Example: SQL Query with EXPLAIN Plan
+
+### MySQL
+
+```sql
+EXPLAIN SELECT * FROM customers WHERE customer_id = 1;
+```
+
+### PostgreSQL
+
+```sql
+EXPLAIN (ANALYZE, VERBOSE) SELECT * FROM customers WHERE customer_id = 1;
+```
+
+### SQLite
+
+```sql
+EXPLAIN QUERY PLAN SELECT * FROM customers WHERE customer_id = 1;
+```
+
+### Output Interpretation
+
+| id | select_type | table    | partitions | type  | possible_keys | key        | key_len | ref  | rows | filtered | Extra       |
+|----|-------------|----------|------------|-------|---------------|------------|---------|------|------|----------|-------------|
+| 1  | SIMPLE      | customers| NULL       | const | PRIMARY       | PRIMARY    | 4       | const| 1    | 100.00   | Using index |
+
+## Example: Understanding the Plan
+
+### MySQL
+
+```sql
+EXPLAIN SELECT c.name, o.order_date 
+FROM customers c 
+JOIN orders o ON c.customer_id = o.customer_id 
+WHERE c.customer_id = 1;
+```
+
+### PostgreSQL
+
+```sql
+EXPLAIN (ANALYZE, VERBOSE) 
+SELECT c.name, o.order_date 
+FROM customers c 
+JOIN orders o ON c.customer_id = o.customer_id 
+WHERE c.customer_id = 1;
+```
+
+### SQLite
+
+```sql
+EXPLAIN QUERY PLAN 
+SELECT c.name, o.order_date 
+FROM customers c 
+JOIN orders o ON c.customer_id = o.customer_id 
+WHERE c.customer_id = 1;
+```
+
+---
+
+## Chat2DB - AI Text2SQL Tool for Easy Database Management
+
+[![Click to use](/image/blog/chat2db.png)](https://app.chat2db.ai/)
+
+## What can Chat2DB do?
+
+- [AI SQL Editor](https://chat2db.ai/feature/AI%20SQL%20Editor)
+- [AI SQL Query Generator](https://chat2db.ai/feature/AI%20SQL%20Query%20Generator)
+- [Analyze Excel Data with AI](https://chat2db.ai/feature/Analyze%20Excel%20Data%20with%20AI)
+- [Best AI Tool for Data Analysis](https://chat2db.ai/feature/Best%20AI%20Tool%20for%20Data%20Analysis)
+- [AI Dashboard with Chat2DB](https://chat2db.ai/feature/AI%20Dashboard%20with%20Chat2DB)
+- [AI Database Client](https://chat2db.ai/feature/AI%20Database%20Client)

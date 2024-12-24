@@ -1,0 +1,177 @@
+---
+title: "What is Data Manipulation Language (DML)"
+description: "Data Manipulation Language (DML) is a subset of SQL (Structured Query Language) used for managing and manipulating data within database objects such as tables."
+date: December 24, 2024
+---
+
+# What is Data Manipulation Language (DML)
+
+## Introduction to DML
+
+**Data Manipulation Language (DML)** is a subset of SQL (Structured Query Language) used for managing and manipulating data within database objects such as tables. It consists of commands that allow you to insert, update, delete, and retrieve data from a database. Unlike Data Definition Language (DDL), which focuses on the structure of the database, DML deals with the actual content or data stored in the database.
+
+### Key Characteristics
+
+- **Data Management:** Enables users to interact with the data contained in tables.
+- **Transaction Control:** DML operations can be part of transactions, allowing for rollback and commit actions to maintain data integrity.
+- **User Interaction:** Provides a way for applications and users to query and modify data in real-time.
+
+## Common DML Commands
+
+### 1. **SELECT**
+
+Used to retrieve data from one or more tables. It's the most frequently used command in DML and forms the basis for reading data.
+
+#### Example: Retrieving Data
+```sql
+SELECT first_name, last_name FROM employees;
+```
+
+#### Example: Conditional Retrieval
+```sql
+SELECT first_name, last_name, hire_date FROM employees WHERE department_id = 5;
+```
+
+### 2. **INSERT**
+
+Adds new rows of data into a table. Each row inserted must conform to the table's schema.
+
+#### Example: Inserting a Single Row
+```sql
+INSERT INTO employees (first_name, last_name, hire_date, department_id)
+VALUES ('John', 'Doe', '2023-06-15', 3);
+```
+
+#### Example: Inserting Multiple Rows
+```sql
+INSERT INTO employees (first_name, last_name, hire_date, department_id)
+VALUES 
+('Jane', 'Smith', '2023-07-20', 4),
+('Alice', 'Johnson', '2023-08-05', 2);
+```
+
+### 3. **UPDATE**
+
+Modifies existing data in a table. You can change one or more columns in one or more rows based on specified conditions.
+
+#### Example: Updating a Single Row
+```sql
+UPDATE employees
+SET department_id = 4
+WHERE employee_id = 10;
+```
+
+#### Example: Updating Multiple Rows
+```sql
+UPDATE employees
+SET salary = salary * 1.10 -- Increase salary by 10%
+WHERE department_id = 5;
+```
+
+### 4. **DELETE**
+
+Removes rows from a table based on specified conditions. Be cautious when using DELETE as it can result in data loss.
+
+#### Example: Deleting a Single Row
+```sql
+DELETE FROM employees
+WHERE employee_id = 15;
+```
+
+#### Example: Deleting Multiple Rows
+```sql
+DELETE FROM employees
+WHERE department_id = 6;
+```
+
+### 5. **MERGE** (Not supported in all DBMSs)
+
+Combines INSERT and UPDATE operations. It can insert new records or update existing ones based on matching criteria between source and target tables.
+
+#### Example: Merging Data
+```sql
+MERGE INTO employees e
+USING temp_employees te
+ON (e.employee_id = te.employee_id)
+WHEN MATCHED THEN
+    UPDATE SET e.salary = te.salary
+WHEN NOT MATCHED THEN
+    INSERT (employee_id, first_name, last_name, hire_date, department_id)
+    VALUES (te.employee_id, te.first_name, te.last_name, te.hire_date, te.department_id);
+```
+
+## Benefits of Using DML
+
+- **Efficiency:** Provides efficient ways to manipulate large volumes of data with minimal code.
+- **Flexibility:** Offers flexibility in how data is accessed and modified, supporting complex queries and updates.
+- **Data Integrity:** When used within transactions, ensures that data modifications are atomic, consistent, isolated, and durable (ACID properties).
+- **Automation:** Facilitates automation of data management tasks through scripts and tools.
+
+## Implementation in Different DBMSs
+
+While the core concepts of DML are consistent across different relational database management systems, there might be slight variations in syntax and available commands:
+
+- **SQL Server:** Supports all standard DML commands with additional features like bulk operations and table hints.
+- **MySQL/InnoDB:** Offers comprehensive DML capabilities, including support for multiple row inserts and updates.
+- **PostgreSQL:** Extends DML with advanced features such as upsert operations (INSERT ... ON CONFLICT DO UPDATE).
+
+## Practical Example
+
+### Managing Employee Records
+
+Consider managing an HR database with an `employees` table. Below are examples of common DML operations you might perform.
+
+#### Step 1: Retrieving Data
+
+To list all employees hired after a certain date:
+
+```sql
+SELECT first_name, last_name, hire_date FROM employees WHERE hire_date > '2023-01-01';
+```
+
+#### Step 2: Inserting Data
+
+To add a new employee:
+
+```sql
+INSERT INTO employees (first_name, last_name, hire_date, department_id)
+VALUES ('Michael', 'Brown', '2023-09-10', 2);
+```
+
+#### Step 3: Updating Data
+
+To give a raise to all employees in a specific department:
+
+```sql
+UPDATE employees
+SET salary = salary * 1.05 -- Increase salary by 5%
+WHERE department_id = 3;
+```
+
+#### Step 4: Deleting Data
+
+To remove an employee who has resigned:
+
+```sql
+DELETE FROM employees
+WHERE employee_id = 25;
+```
+
+## Conclusion
+
+Data Manipulation Language is essential for interacting with and managing data within databases. By mastering DML commands, database professionals and developers can efficiently query, insert, update, and delete data, ensuring that their applications remain dynamic and responsive to changing business needs. Understanding how to effectively use DML within transactions and alongside other SQL features can greatly enhance data management practices and application performance.
+
+---
+
+## Chat2DB - AI Text2SQL Tool for Easy Database Management
+
+[![Click to use](/image/blog/chat2db.png)](https://app.chat2db.ai/)
+
+## What can Chat2DB do?
+
+- [AI SQL Editor](https://chat2db.ai/feature/AI%20SQL%20Editor)
+- [AI SQL Query Generator](https://chat2db.ai/feature/AI%20SQL%20Query%20Generator)
+- [Analyze Excel Data with AI](https://chat2db.ai/feature/Analyze%20Excel%20Data%20with%20AI)
+- [Best AI Tool for Data Analysis](https://chat2db.ai/feature/Best%20AI%20Tool%20for%20Data%20Analysis)
+- [AI Dashboard with Chat2DB](https://chat2db.ai/feature/AI%20Dashboard%20with%20Chat2DB)
+- [AI Database Client](https://chat2db.ai/feature/AI%20Database%20Client)

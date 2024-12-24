@@ -1,0 +1,110 @@
+---
+title: "What is Cardinality"
+description: "Cardinality in the context of databases refers to the uniqueness of data values contained in a column (or attribute) of a database table."
+date: December 24, 2024
+---
+
+# What is Cardinality
+
+## Introduction to Cardinality
+
+**Cardinality** in the context of databases refers to the uniqueness of data values contained in a column (or attribute) of a database table. More specifically, it indicates the number of distinct values that can appear in a column or the relationship between two tables.
+
+### Types of Cardinality
+
+There are two main contexts where cardinality is used:
+
+1. **Column Cardinality:** Refers to the uniqueness of data within a single column.
+2. **Relationship Cardinality:** Describes the relationships between tables and the constraints on those relationships.
+
+## Column Cardinality
+
+### Definitions
+
+- **High Cardinality:** A column with high cardinality has many unique values relative to the number of rows in the table. Examples include `email`, `SSN`, or `employee_id`.
+- **Low Cardinality:** A column with low cardinality has few unique values compared to the number of rows. Examples include `gender`, `status`, or `department`.
+
+### Importance
+
+Understanding column cardinality is crucial for:
+
+- **Indexing:** High-cardinality columns are often good candidates for indexing because they can efficiently narrow down search results.
+- **Query Optimization:** Database query optimizers use cardinality estimates to choose the most efficient execution plans.
+
+## Relationship Cardinality
+
+### Definitions
+
+Relationship cardinality describes how records in one table relate to records in another. The main types are:
+
+- **One-to-One (1:1):** Each record in Table A relates to exactly one record in Table B, and vice versa.
+  - Example: A person has exactly one passport, and each passport belongs to exactly one person.
+  
+- **One-to-Many (1:N):** One record in Table A can relate to multiple records in Table B, but each record in Table B relates to only one record in Table A.
+  - Example: One department can have many employees, but each employee belongs to only one department.
+  
+- **Many-to-Many (M:N):** Multiple records in Table A can relate to multiple records in Table B, and vice versa.
+  - Example: Students can enroll in multiple courses, and each course can have multiple students.
+
+### Diagram Representation
+
+In Entity-Relationship (ER) diagrams, cardinality is represented using symbols next to the lines connecting entities:
+
+- **1:1:** A single line with a small perpendicular line at both ends.
+- **1:N:** A single line with a crow's foot symbol at the "many" end.
+- **M:N:** Both ends have crow's foot symbols, often requiring a junction table to represent the relationship.
+
+## Practical Example
+
+### ER Diagram Example
+
+Consider an ER diagram for a university database:
+
+- **Student** entity:
+  - Attributes: `student_id`, `name`, `major`
+- **Course** entity:
+  - Attributes: `course_id`, `title`, `credits`
+
+The relationship between students and courses is many-to-many (`M:N`), as each student can take multiple courses, and each course can be taken by multiple students. This relationship requires a junction table called `enrollment`:
+
+```sql
+CREATE TABLE Student (
+    student_id INT PRIMARY KEY,
+    name VARCHAR(100),
+    major VARCHAR(50)
+);
+
+CREATE TABLE Course (
+    course_id INT PRIMARY KEY,
+    title VARCHAR(100),
+    credits INT
+);
+
+CREATE TABLE Enrollment (
+    student_id INT,
+    course_id INT,
+    grade CHAR(2),
+    PRIMARY KEY (student_id, course_id),
+    FOREIGN KEY (student_id) REFERENCES Student(student_id),
+    FOREIGN KEY (course_id) REFERENCES Course(course_id)
+);
+```
+
+## Conclusion
+
+Understanding cardinality—both in terms of column uniqueness and table relationships—is fundamental to designing efficient and well-structured databases. Properly managing cardinality ensures data integrity and supports optimal query performance.
+
+---
+
+## Chat2DB - AI Text2SQL Tool for Easy Database Management
+
+[![Click to use](/image/blog/chat2db.png)](https://app.chat2db.ai/)
+
+## What can Chat2DB do?
+
+- [AI SQL Editor](https://chat2db.ai/feature/AI%20SQL%20Editor)
+- [AI SQL Query Generator](https://chat2db.ai/feature/AI%20SQL%20Query%20Generator)
+- [Analyze Excel Data with AI](https://chat2db.ai/feature/Analyze%20Excel%20Data%20with%20AI)
+- [Best AI Tool for Data Analysis](https://chat2db.ai/feature/Best%20AI%20Tool%20for%20Data%20Analysis)
+- [AI Dashboard with Chat2DB](https://chat2db.ai/feature/AI%20Dashboard%20with%20Chat2DB)
+- [AI Database Client](https://chat2db.ai/feature/AI%20Database%20Client)

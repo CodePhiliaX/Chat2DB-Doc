@@ -1,0 +1,126 @@
+---
+title: "What is a Fact Table"
+description: "A Fact Table is a central component in data warehousing and online analytical processing (OLAP) systems, primarily used for storing quantitative information for analysis."
+date: December 24, 2024
+---
+
+# What is a Fact Table
+
+## Introduction to Fact Tables
+
+A **Fact Table** is a central component in data warehousing and online analytical processing (OLAP) systems, primarily used for storing quantitative information for analysis. It contains measurements, metrics, or facts of business processes and is typically surrounded by dimension tables that provide context to the facts.
+
+### Key Characteristics
+
+- **Measures:** Numerical values representing business metrics.
+- **Foreign Keys:** References to primary keys in dimension tables.
+- **Granularity:** Level of detail at which data is stored (e.g., daily sales, hourly website visits).
+- **Volume:** Often contains a large volume of data due to detailed transactional records.
+
+## Structure of a Fact Table
+
+| fact_table_id | date_key | product_key | store_key | units_sold | sales_amount |
+|---------------|----------|-------------|-----------|------------|--------------|
+| 1             | 20240101 | 101         | 501       | 10         | 500.00       |
+| 2             | 20240101 | 102         | 502       | 5          | 300.00       |
+
+### Example: Sales Fact Table
+
+| sale_id | date_key | product_key | store_key | units_sold | sales_amount |
+|---------|----------|-------------|-----------|------------|--------------|
+| 1       | 20240101 | 1           | 10        | 20         | 1000.00      |
+| 2       | 20240102 | 2           | 11        | 15         | 750.00       |
+
+## Relationships with Dimension Tables
+
+Fact tables are connected to dimension tables through foreign key relationships. Dimensions provide descriptive attributes about the facts, such as time, location, or product details.
+
+### Example: Star Schema Diagram
+
+```plaintext
+[Sales Fact]
+  |
+  |--- [Date Dimension]
+  |--- [Product Dimension]
+  |--- [Store Dimension]
+```
+
+### SQL Example: Joining Fact and Dimension Tables
+
+```sql
+SELECT 
+    d.date,
+    p.product_name,
+    s.store_name,
+    f.units_sold,
+    f.sales_amount
+FROM 
+    sales_fact f
+JOIN 
+    date_dimension d ON f.date_key = d.date_key
+JOIN 
+    product_dimension p ON f.product_key = p.product_key
+JOIN 
+    store_dimension s ON f.store_key = s.store_key;
+```
+
+## Types of Fact Tables
+
+### 1. **Transactional Fact Table**
+
+Captures individual transactions at the most granular level.
+
+#### Example:
+
+| transaction_id | date_key | product_key | store_key | quantity | price |
+|----------------|----------|-------------|-----------|----------|-------|
+| 1              | 20240101 | 101         | 501       | 1        | 50.00 |
+| 2              | 20240101 | 102         | 502       | 1        | 60.00 |
+
+### 2. **Periodic Snapshot Fact Table**
+
+Records snapshots of data at regular intervals, such as monthly sales summaries.
+
+#### Example:
+
+| snapshot_id | date_key | product_key | store_key | units_sold | sales_amount |
+|-------------|----------|-------------|-----------|------------|--------------|
+| 1           | 20240131 | 101         | 501       | 100        | 5000.00      |
+| 2           | 20240228 | 102         | 502       | 120        | 7200.00      |
+
+### 3. **Accumulating Snapshot Fact Table**
+
+Tracks the status of a process over time, often used for long-running processes like order fulfillment.
+
+#### Example:
+
+| order_id | date_key | product_key | store_key | order_placed_date | shipped_date | delivered_date |
+|----------|----------|-------------|-----------|-------------------|--------------|----------------|
+| 1        | 20240101 | 101         | 501       | 20240101          | 20240105     | 20240107       |
+| 2        | 20240102 | 102         | 502       | 20240102          | NULL         | NULL           |
+
+## Benefits of Fact Tables
+
+- **Centralized Data:** Aggregates transactional data from various sources into a single repository.
+- **Performance Optimization:** Facilitates efficient querying and analysis by pre-aggregating data.
+- **Data Consistency:** Ensures uniform representation of metrics across different reports and analyses.
+- **Scalability:** Supports large volumes of data and complex queries required for business intelligence.
+
+## Conclusion
+
+Fact tables are crucial components of data warehouses, providing a structured way to store and analyze quantitative business data. By linking with dimension tables, they offer comprehensive insights into various aspects of business operations, enabling informed decision-making.
+
+---
+
+## Chat2DB - AI Text2SQL Tool for Easy Database Management
+
+[![Click to use](/image/blog/chat2db.png)](https://app.chat2db.ai/)
+
+## What can Chat2DB do?
+
+- [AI SQL Editor](https://chat2db.ai/feature/AI%20SQL%20Editor)
+- [AI SQL Query Generator](https://chat2db.ai/feature/AI%20SQL%20Query%20Generator)
+- [Analyze Excel Data with AI](https://chat2db.ai/feature/Analyze%20Excel%20Data%20with%20AI)
+- [Best AI Tool for Data Analysis](https://chat2db.ai/feature/Best%20AI%20Tool%20for%20Data%20Analysis)
+- [AI Dashboard with Chat2DB](https://chat2db.ai/feature/AI%20Dashboard%20with%20Chat2DB)
+- [AI Database Client](https://chat2db.ai/feature/AI%20Database%20Client)

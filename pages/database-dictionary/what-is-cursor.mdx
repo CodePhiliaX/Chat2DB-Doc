@@ -1,0 +1,208 @@
+---
+title: "What is a Cursor"
+description: "A Cursor in database management systems (DBMS) is a database object used to retrieve data from a result set one row at a time instead of the typical operation that retrieves all rows simultaneously."
+date: December 24, 2024
+---
+
+# What is a Cursor
+
+## Introduction to Cursors
+
+A **Cursor** in database management systems (DBMS) is a database object used to retrieve data from a result set one row at a time instead of the typical operation that retrieves all rows simultaneously. Cursors are particularly useful when you need to perform operations on individual rows, such as processing each row with procedural logic or updating records individually.
+
+### Key Characteristics
+
+- **Row-by-row Processing:** Enables processing of one row at a time from a result set.
+- **Controlled Access:** Provides controlled access to the result set, allowing for more granular manipulation of data.
+- **Resource Intensive:** Can be resource-intensive and slower compared to set-based operations, so they should be used judiciously.
+
+## Types of Cursors
+
+Cursors can be categorized based on their behavior and capabilities:
+
+1. **Scrollable vs Non-Scrollable:**
+   - **Scrollable:** Allows movement backward and forward through the result set.
+   - **Non-Scrollable:** Only allows forward movement through the result set.
+
+2. **Sensitive vs Insensitive:**
+   - **Sensitive:** Reflects changes made to the underlying data by other transactions.
+   - **Insensitive:** Does not reflect changes made by other transactions; it works on a static copy of the result set.
+
+3. **Forward-only vs Static:**
+   - **Forward-only:** Only allows moving forward through the result set.
+   - **Static:** Creates a temporary copy of the result set, which can be scrolled both forward and backward but does not reflect changes made after the cursor was opened.
+
+4. **Dynamic:** Reflects all changes made to the rows in the result set as you scroll around the cursor.
+
+### Common Cursor Operations
+
+- **DECLARE:** Defines a cursor for a specific SELECT statement.
+- **OPEN:** Executes the query associated with the cursor and populates the result set.
+- **FETCH:** Retrieves one row from the result set into variables or host variables.
+- **CLOSE:** Closes the cursor, releasing resources but keeping its definition available.
+- **DEALLOCATE:** Removes the cursor definition and frees resources.
+
+## Benefits and Drawbacks of Cursors
+
+### Benefits
+
+- **Granular Control:** Offers detailed control over how data is processed, which can be necessary for complex operations.
+- **Flexibility:** Useful for scenarios where set-based operations are not feasible or efficient.
+- **User Interaction:** Facilitates interaction with users who need to see and manipulate data row by row.
+
+### Drawbacks
+
+- **Performance Overhead:** Generally less efficient than set-based operations because they involve multiple round trips between the application and the database.
+- **Resource Consumption:** Can consume significant server resources, especially for large result sets.
+- **Complexity:** Increases the complexity of code, making it harder to maintain and debug.
+
+## Implementation in Databases
+
+Most relational database management systems support cursors with slight variations in syntax and functionality. Below are examples of using cursors in different DBMS environments.
+
+### SQL Server Example
+
+```sql
+-- Declare a cursor
+DECLARE employee_cursor CURSOR FOR
+SELECT employee_id, first_name, last_name FROM employees;
+
+-- Open the cursor
+OPEN employee_cursor;
+
+-- Fetch rows from the cursor
+FETCH NEXT FROM employee_cursor INTO @employee_id, @first_name, @last_name;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    -- Process the row here
+    PRINT 'Employee ID: ' + CAST(@employee_id AS VARCHAR) + ', Name: ' + @first_name + ' ' + @last_name;
+
+    -- Fetch the next row
+    FETCH NEXT FROM employee_cursor INTO @employee_id, @first_name, @last_name;
+END
+
+-- Close and deallocate the cursor
+CLOSE employee_cursor;
+DEALLOCATE employee_cursor;
+```
+
+### MySQL Example
+
+MySQL does not support cursors in regular SQL scripts but does allow them within stored procedures.
+
+```sql
+DELIMITER //
+
+CREATE PROCEDURE process_employees()
+BEGIN
+    DECLARE done INT DEFAULT FALSE;
+    DECLARE emp_id INT;
+    DECLARE emp_name VARCHAR(50);
+    
+    -- Declare a cursor
+    DECLARE cur1 CURSOR FOR SELECT employee_id, CONCAT(first_name, ' ', last_name) FROM employees;
+    
+    -- Declare continue handler
+    DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = TRUE;
+
+    OPEN cur1;
+
+    read_loop: LOOP
+        FETCH cur1 INTO emp_id, emp_name;
+        IF done THEN
+            LEAVE read_loop;
+        END IF;
+        -- Process the row here
+        SELECT emp_id, emp_name;
+    END LOOP;
+
+    CLOSE cur1;
+END //
+
+DELIMITER ;
+```
+
+### PostgreSQL Example
+
+PostgreSQL supports cursors primarily within PL/pgSQL functions.
+
+```sql
+DO $$
+DECLARE
+    emp_record RECORD;
+    emp_cursor CURSOR FOR SELECT employee_id, first_name, last_name FROM employees;
+BEGIN
+    OPEN emp_cursor;
+
+    LOOP
+        FETCH emp_cursor INTO emp_record;
+        EXIT WHEN NOT FOUND;
+
+        -- Process the row here
+        RAISE NOTICE 'Employee ID: %, Name: % %', emp_record.employee_id, emp_record.first_name, emp_record.last_name;
+    END LOOP;
+
+    CLOSE emp_cursor;
+END $$;
+```
+
+## Practical Example
+
+### Using Cursors for Batch Updates
+
+Consider a scenario where you need to update employee salaries based on department-specific criteria:
+
+```sql
+-- Declare a cursor for employees in a specific department
+DECLARE salary_update_cursor CURSOR FOR
+SELECT employee_id, salary FROM employees WHERE department_id = 5;
+
+-- Open the cursor
+OPEN salary_update_cursor;
+
+-- Declare variables to hold current row values
+DECLARE @emp_id INT;
+DECLARE @current_salary DECIMAL(10, 2);
+
+-- Loop through the cursor
+FETCH NEXT FROM salary_update_cursor INTO @emp_id, @current_salary;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    -- Update the salary for the current employee
+    UPDATE employees
+    SET salary = @current_salary * 1.10 -- Increase salary by 10%
+    WHERE employee_id = @emp_id;
+
+    -- Fetch the next row
+    FETCH NEXT FROM salary_update_cursor INTO @emp_id, @current_salary;
+END
+
+-- Clean up
+CLOSE salary_update_cursor;
+DEALLOCATE salary_update_cursor;
+```
+
+In this example:
+- A cursor is declared for employees in department `5`.
+- The cursor is opened and iterated over to apply a 10% salary increase to each employee in that department.
+
+## Conclusion
+
+Cursors provide a powerful mechanism for handling row-by-row data processing in databases. While they offer flexibility and control, they come with performance trade-offs and should be used thoughtfully, especially for large datasets where set-based operations might be more appropriate. Understanding when and how to use cursors effectively can enhance your ability to manage complex data processing tasks within a database environment.
+
+---
+
+## Chat2DB - AI Text2SQL Tool for Easy Database Management
+
+[![Click to use](/image/blog/chat2db.png)](https://app.chat2db.ai/)
+
+## What can Chat2DB do?
+
+- [AI SQL Editor](https://chat2db.ai/feature/AI%20SQL%20Editor)
+- [AI SQL Query Generator](https://chat2db.ai/feature/AI%20SQL%20Query%20Generator)
+- [Analyze Excel Data with AI](https://chat2db.ai/feature/Analyze%20Excel%20Data%20with%20AI)
+- [Best AI Tool for Data Analysis](https://chat2db.ai/feature/Best%20AI%20Tool%20for%20Data%20Analysis)
+- [AI Dashboard with Chat2DB](https://chat2db.ai/feature/AI%20Dashboard%20with%20Chat2DB)
+- [AI Database Client](https://chat2db.ai/feature/AI%20Database%20Client)

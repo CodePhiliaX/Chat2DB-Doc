@@ -1,0 +1,198 @@
+---
+title: "What is an Insert Statement"
+description: "INSERT statement in SQL (Structured Query Language) is used to add new records (rows) into a database table. It specifies the table into which data should be inserted and provides the values for one or more columns in that table."
+date: December 24, 2024
+---
+
+# What is an Insert Statement
+
+## Introduction to Insert Statements
+
+An **INSERT statement** in SQL (Structured Query Language) is used to add new records (rows) into a database table. It specifies the table into which data should be inserted and provides the values for one or more columns in that table. The `INSERT` statement is one of the most commonly used commands for adding data to a database.
+
+### Key Characteristics
+
+- **Adding New Data:** Used to insert new rows into a table.
+- **Specifying Columns:** Allows you to specify which columns will receive new data.
+- **Providing Values:** Requires providing values for the specified columns, either as literals, expressions, or subqueries.
+- **Data Integrity:** Ensures that the inserted data adheres to any constraints defined on the table (e.g., NOT NULL, UNIQUE).
+
+## Syntax of Insert Statements
+
+There are two main forms of the `INSERT` statement:
+
+1. **Insert with Column List:**
+   - Specifies the names of the columns for which you're providing values.
+   - Useful when you want to insert data into specific columns only.
+
+2. **Insert without Column List:**
+   - Provides values for all columns in the table.
+   - The order of the provided values must match the order of the columns in the table.
+
+### Example Scenario
+
+Consider a `employees` table with the following structure:
+
+#### Employees Table Structure
+
+| Column Name     | Data Type  | Constraints      |
+|-----------------|------------|------------------|
+| employee_id     | INT        | PRIMARY KEY      |
+| first_name      | VARCHAR(50)| NOT NULL         |
+| last_name       | VARCHAR(50)| NOT NULL         |
+| department_id   | INT        |                  |
+| hire_date       | DATE       |                  |
+
+## Using Insert with Column List
+
+This form allows you to specify which columns you are inserting data into. You can omit columns if they have default values or allow NULLs.
+
+#### Syntax
+
+```sql
+INSERT INTO table_name (column1, column2, ..., columnN)
+VALUES (value1, value2, ..., valueN);
+```
+
+#### Example
+
+```sql
+INSERT INTO employees (employee_id, first_name, last_name, department_id, hire_date)
+VALUES (1, 'John', 'Doe', 101, '2024-01-15');
+```
+
+### Explanation
+
+- This query inserts a new row into the `employees` table with specific values for each column.
+- Only the specified columns (`employee_id`, `first_name`, `last_name`, `department_id`, `hire_date`) are populated; other columns remain unchanged or use default values.
+
+## Using Insert without Column List
+
+This form requires you to provide values for all columns in the table, and the order of the values must match the order of the columns.
+
+#### Syntax
+
+```sql
+INSERT INTO table_name
+VALUES (value1, value2, ..., valueN);
+```
+
+#### Example
+
+```sql
+INSERT INTO employees
+VALUES (2, 'Jane', 'Smith', 102, '2024-02-20');
+```
+
+### Explanation
+
+- This query assumes that the `employees` table has exactly five columns in the order `employee_id`, `first_name`, `last_name`, `department_id`, `hire_date`.
+- Each value corresponds to its respective column based on position.
+
+## Inserting Multiple Rows
+
+You can also insert multiple rows at once using the `VALUES` clause by listing multiple sets of values separated by commas.
+
+#### Example
+
+```sql
+INSERT INTO employees (employee_id, first_name, last_name, department_id, hire_date)
+VALUES 
+    (3, 'Alice', 'Johnson', 101, '2024-03-01'),
+    (4, 'Bob', 'Brown', 102, '2024-04-10');
+```
+
+### Explanation
+
+- This query inserts two new rows into the `employees` table in a single statement.
+- Each set of values represents a separate row.
+
+## Inserting Data from Another Table
+
+You can also insert data into a table by selecting it from another table using a `SELECT` statement.
+
+#### Syntax
+
+```sql
+INSERT INTO target_table (column1, column2, ..., columnN)
+SELECT column1, column2, ..., columnN
+FROM source_table
+WHERE condition;
+```
+
+#### Example
+
+```sql
+INSERT INTO employees (employee_id, first_name, last_name, department_id, hire_date)
+SELECT employee_id, first_name, last_name, department_id, hire_date
+FROM temp_employees
+WHERE hire_date > '2024-01-01';
+```
+
+### Explanation
+
+- This query copies selected data from the `temp_employees` table into the `employees` table.
+- Only rows where `hire_date` is after January 1, 2024, are inserted.
+
+## Benefits of Using Insert Statements
+
+- **Data Population:** Quickly adds new data to tables.
+- **Flexibility:** Supports inserting single or multiple rows, and copying data between tables.
+- **Data Integrity:** Ensures that the inserted data adheres to the table's constraints and rules.
+- **Automation:** Can be used in scripts or applications to automate data insertion processes.
+
+## Considerations
+
+- **Primary Keys and Unique Constraints:** Ensure that the inserted data does not violate unique or primary key constraints.
+- **Default Values:** Understand how default values are handled when certain columns are omitted.
+- **NULL Values:** Be aware of columns that do not allow NULL values and ensure appropriate data is provided.
+- **Transaction Management:** Use transactions to manage multiple insert operations as a single unit of work, ensuring atomicity.
+
+## Implementation in Different SQL Databases
+
+### Oracle Database
+
+```sql
+INSERT INTO employees (employee_id, first_name, last_name, department_id, hire_date)
+VALUES (1, 'John', 'Doe', 101, TO_DATE('2024-01-15', 'YYYY-MM-DD'));
+```
+
+### MySQL Database
+
+```sql
+INSERT INTO employees (employee_id, first_name, last_name, department_id, hire_date)
+VALUES (1, 'John', 'Doe', 101, '2024-01-15');
+```
+
+### PostgreSQL Database
+
+```sql
+INSERT INTO employees (employee_id, first_name, last_name, department_id, hire_date)
+VALUES (1, 'John', 'Doe', 101, '2024-01-15');
+```
+
+### Microsoft SQL Server
+
+```sql
+INSERT INTO employees (employee_id, first_name, last_name, department_id, hire_date)
+VALUES (1, 'John', 'Doe', 101, '2024-01-15');
+```
+
+## Conclusion
+
+The `INSERT` statement is a fundamental operation in SQL used to add new data into database tables. By understanding its syntax and various forms, database administrators and developers can effectively populate tables with accurate and consistent data, supporting the functionality and integrity of database applications. Properly utilizing `INSERT` statements leads to better data management practices and enhanced application performance.
+
+---
+
+## Chat2DB - AI Text2SQL Tool for Easy Database Management
+
+[![Click to use](/image/blog/chat2db.png)](https://app.chat2db.ai/)
+
+## What can Chat2DB do?
+
+- [AI SQL Editor](https://chat2db.ai/feature/AI%20SQL%20Editor)
+- [AI SQL Query Generator](https://chat2db.ai/feature/AI%20SQL%20Query%20Generator)
+- [Analyze Excel Data with AI](https://chat2db.ai/feature/Analyze%20Excel%20Data%20with%20AI)
+- [Best AI Tool for Data Analysis](https://chat2db.ai/feature/Best%20AI%20Tool%20for%20Data%20Analysis)
+- [AI Dashboard with Chat2DB](https://chat2db.ai/feature/AI%20Dashboard%20with%20Chat2DB)
+- [AI Database Client](https://chat2db.ai/feature/AI%20Database%20Client)

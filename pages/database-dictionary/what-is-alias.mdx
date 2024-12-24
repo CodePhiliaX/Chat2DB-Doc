@@ -1,0 +1,132 @@
+---
+title: "What is Alias"
+description: "An alias in SQL allows you to temporarily rename a table, column, or the result of an expression for the duration of a query."
+date: December 24, 2024
+---
+
+# What is Alias
+
+## Introduction to Aliases in SQL
+
+An **alias** in SQL allows you to temporarily rename a table, column, or the result of an expression for the duration of a query. Aliases make queries more readable and can simplify complex queries by providing meaningful names to columns or tables. They are particularly useful when working with long table names, aggregated data, or joined tables.
+
+## Column Aliases
+
+Column aliases provide a new name for a column in the result set. This can improve readability and clarity.
+
+Example: Renaming a Column
+
+```SQL
+SELECT first_name AS "Name", last_name AS "Surname"
+FROM employees;
+```
+
+In this example, the columns `first_name` and `last_name` are renamed to `Name` and `Surname` respectively in the output.
+
+## Table Aliases
+
+Table aliases provide a shorthand way to refer to tables, especially useful in JOIN operations or when referencing the same table multiple times within a query.
+
+Example: Using Table Aliases in a JOIN
+
+```SQL
+SELECT e.first_name, e.last_name, d.department_name
+FROM employees e
+JOIN departments d ON e.department_id = d.department_id;
+```
+
+Here, `employees` is aliased as `e` and `departments` as `d`, making the query more concise and easier to read.
+
+## Expression Aliases
+
+Expression aliases allow you to assign a name to the result of an expression, which can be particularly useful for aggregated results or calculated fields.
+
+Example: Naming an Aggregated Result
+
+```SQL
+SELECT department_id, AVG(salary) AS average_salary
+FROM employees
+GROUP BY department_id;
+```
+
+This query calculates the average salary for each department and renames the resulting column to `average_salary`.
+
+## Derived Tables (Subqueries) with Aliases
+
+Aliases can also be used to name derived tables (subqueries), making it easier to reference them in the main query.
+
+Example: Using an Alias for a Subquery
+
+```SQL
+SELECT avg_salary.department_id, avg_salary.average_salary
+FROM (
+    SELECT department_id, AVG(salary) AS average_salary
+    FROM employees
+    GROUP BY department_id
+) AS avg_salary;
+```
+
+In this example, the subquery that calculates the average salary per department is aliased as `avg_salary`, and then its columns are selected in the outer query.
+
+## Benefits of Using Aliases
+
+- **Improved Readability:** Aliases make queries easier to understand, especially when dealing with complex joins or long table/column names.
+- **Simplified** **Syntax****:** Shorter aliases reduce the amount of typing required and make queries more manageable.
+- **Enhanced Clarity:** Meaningful aliases can clarify the purpose of columns or expressions, aiding in maintenance and collaboration.
+
+By using aliases effectively, you can write cleaner, more understandable SQL queries that are easier to maintain and debug.
+
+# What is Anchored Window Function
+
+An **Anchored Window Function** in SQL is a type of window function that defines a frame within which the function operates, starting from a specific row known as the anchor. This allows for more precise control over the range of rows included in calculations such as running totals, moving averages, or cumulative sums. The anchor can be defined using keywords like `ROWS BETWEEN` or `RANGE BETWEEN`, specifying how far before or after the current row the window should extend.
+
+## Syntax and Components
+
+The general syntax for an anchored window function includes the `OVER` clause with a `PARTITION BY`, `ORDER BY`, and a window frame specification. The window frame specifies the start and end points relative to the current row.
+
+Example: Running Total with Anchor
+
+```SQL
+SELECT order_date, order_amount,
+       SUM(order_amount) OVER (
+           ORDER BY order_date
+           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+       ) AS running_total
+FROM orders;
+```
+
+In this example, the `SUM` function calculates a running total of `order_amount` ordered by `order_date`. The window frame starts from the first row (`UNBOUNDED PRECEDING`) and ends at the current row, ensuring the sum includes all previous rows up to the current one.
+
+## Common Use Cases
+
+Anchored window functions are particularly useful for scenarios requiring cumulative calculations or comparisons against a baseline. For instance, calculating running totals, moving averages, or identifying trends over time can benefit from anchored windows.
+
+Example: Moving Average with Anchor
+
+```SQL
+SELECT date, value,
+       AVG(value) OVER (
+           ORDER BY date
+           ROWS BETWEEN 2 PRECEDING AND CURRENT ROW
+       ) AS moving_average
+FROM data_points;
+```
+
+This query calculates a three-point moving average where the window includes the current row and the two preceding rows.
+
+Anchored window functions provide powerful tools for performing sophisticated data analysis directly within SQL queries, offering flexibility and precision in defining the scope of calculations.
+
+---
+
+## Chat2DB - AI Text2SQL Tool for Easy Database Management
+
+[![Click to use](/image/blog/chat2db.png)](https://app.chat2db.ai/)
+
+## What can Chat2DB do?
+
+- [AI SQL Editor](https://chat2db.ai/feature/AI%20SQL%20Editor)
+- [AI SQL Query Generator](https://chat2db.ai/feature/AI%20SQL%20Query%20Generator)
+- [Analyze Excel Data with AI](https://chat2db.ai/feature/Analyze%20Excel%20Data%20with%20AI)
+- [Best AI Tool for Data Analysis](https://chat2db.ai/feature/Best%20AI%20Tool%20for%20Data%20Analysis)
+- [AI Dashboard with Chat2DB](https://chat2db.ai/feature/AI%20Dashboard%20with%20Chat2DB)
+- [AI Database Client](https://chat2db.ai/feature/AI%20Database%20Client)

@@ -1,0 +1,87 @@
+---
+title: "What is a Derived Table"
+description: "A Derived Table is a temporary table that results from a subquery within a SQL statement. It exists only for the duration of the query and is not stored permanently in the database."
+date: December 24, 2024
+---
+
+# What is a Derived Table
+
+## Introduction to Derived Tables
+
+A **Derived Table** is a temporary table that results from a subquery within a SQL statement. It exists only for the duration of the query and is not stored permanently in the database. Derived tables are often used to simplify complex queries by breaking them down into more manageable parts or to provide intermediate results that can be further processed.
+
+### Key Characteristics
+
+- **Temporary Nature:** Exists only during the execution of the query.
+- **Subquery-Based:** Created using a SELECT statement within another SQL statement.
+- **Alias Required:** Must be given an alias name to reference it within the outer query.
+- **Flexibility:** Can include joins, aggregations, and other SQL features.
+
+## Syntax Example
+
+The basic syntax for creating a derived table involves embedding a SELECT statement within the FROM clause of an outer query.
+
+```sql
+SELECT column1, column2, ...
+FROM (
+    SELECT column1, column2, ...
+    FROM table_name
+    WHERE condition
+) AS alias_name;
+```
+
+### Practical Example
+
+Consider a scenario where you want to analyze sales data but only focus on products that have sold more than 100 units.
+
+#### Step 1: Create the Derived Table
+
+First, create a derived table that filters out products with fewer than 100 sales.
+
+```sql
+SELECT product_id, SUM(quantity_sold) AS total_sold
+FROM sales
+GROUP BY product_id
+HAVING SUM(quantity_sold) > 100;
+```
+
+#### Step 2: Use the Derived Table in the Outer Query
+
+Next, use this derived table in an outer query to get additional details about these high-selling products.
+
+```sql
+SELECT p.product_name, dt.total_sold
+FROM products p
+JOIN (
+    SELECT product_id, SUM(quantity_sold) AS total_sold
+    FROM sales
+    GROUP BY product_id
+    HAVING SUM(quantity_sold) > 100
+) AS dt ON p.product_id = dt.product_id;
+```
+
+## Benefits of Using Derived Tables
+
+- **Simplified Queries:** Breaks down complex queries into simpler, more understandable components.
+- **Intermediate Results:** Allows for the creation of intermediate result sets that can be manipulated further.
+- **Performance Optimization:** Can sometimes improve performance by reducing the amount of data processed in the main query.
+- **Reusability:** Intermediate results can be reused within the same query, avoiding redundant calculations.
+
+## Conclusion
+
+Derived tables offer a flexible way to work with intermediate datasets within SQL queries. By encapsulating subqueries as derived tables, developers can write more organized and maintainable code while potentially optimizing query performance. Understanding how to effectively use derived tables can greatly enhance the ability to tackle complex data retrieval and analysis tasks.
+
+---
+
+## Chat2DB - AI Text2SQL Tool for Easy Database Management
+
+[![Click to use](/image/blog/chat2db.png)](https://app.chat2db.ai/)
+
+## What can Chat2DB do?
+
+- [AI SQL Editor](https://chat2db.ai/feature/AI%20SQL%20Editor)
+- [AI SQL Query Generator](https://chat2db.ai/feature/AI%20SQL%20Query%20Generator)
+- [Analyze Excel Data with AI](https://chat2db.ai/feature/Analyze%20Excel%20Data%20with%20AI)
+- [Best AI Tool for Data Analysis](https://chat2db.ai/feature/Best%20AI%20Tool%20for%20Data%20Analysis)
+- [AI Dashboard with Chat2DB](https://chat2db.ai/feature/AI%20Dashboard%20with%20Chat2DB)
+- [AI Database Client](https://chat2db.ai/feature/AI%20Database%20Client)

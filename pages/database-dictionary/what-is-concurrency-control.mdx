@@ -1,0 +1,123 @@
+---
+title: "What is Concurrency Control"
+description: "Concurrency Control in database management systems (DBMS) refers to the mechanisms and techniques used to ensure that multiple transactions can operate concurrently without leading to inconsistencies or conflicts."
+date: December 24, 2024
+---
+
+# What is Concurrency Control
+
+## Introduction to Concurrency Control
+
+**Concurrency Control** in database management systems (DBMS) refers to the mechanisms and techniques used to ensure that multiple transactions can operate concurrently without leading to inconsistencies or conflicts. It aims to maintain the ACID properties (Atomicity, Consistency, Isolation, Durability) of transactions while allowing efficient parallel processing.
+
+### Key Objectives
+
+- **Data Integrity:** Ensures that concurrent transactions do not compromise the integrity of the data.
+- **Performance:** Maximizes system throughput and minimizes delays caused by locking or waiting for resources.
+- **Isolation:** Provides each transaction with the illusion that it has exclusive access to the database, even when multiple transactions are running simultaneously.
+
+## Types of Concurrency Control
+
+Concurrency control can be categorized into two main types:
+
+1. **Lock-Based Schemes**
+2. **Optimistic Concurrency Control**
+
+### Lock-Based Schemes
+
+Locks are mechanisms that prevent other transactions from accessing certain parts of the database while a lock is held. There are different types of locks:
+
+- **Shared Lock (S-Lock):** Allows multiple transactions to read the same data item concurrently but prevents any transaction from writing to it.
+- **Exclusive Lock (X-Lock):** Grants a single transaction exclusive access to a data item, preventing all other transactions from reading or writing to it.
+
+#### Locking Protocols
+
+- **Two-Phase Locking (2PL):** Requires that a transaction acquires all necessary locks before performing any operations and releases them only after completing all actions. This protocol ensures serializability.
+- **Deadlock Prevention:** Strategies such as timeout-based detection or wait-for graphs help avoid situations where two or more transactions are waiting indefinitely for each other's locks.
+
+### Optimistic Concurrency Control (OCC)
+
+Optimistic concurrency control assumes that conflicts between transactions are rare and allows transactions to proceed without locking resources. Instead, it checks for conflicts at commit time:
+
+- **Validation Phase:** Before committing, the system checks if any conflicting updates have occurred during the transaction's execution.
+- **Abort and Retry:** If conflicts are detected, the transaction is aborted and may need to be retried.
+
+This approach can offer better performance in environments with low contention but requires handling transaction rollbacks and retries.
+
+## Isolation Levels
+
+To manage concurrency, DBMSs provide different isolation levels that determine how transactions interact with each other. The SQL standard defines four isolation levels:
+
+1. **Read Uncommitted:** Transactions can read uncommitted changes made by other transactions, which can lead to dirty reads.
+2. **Read Committed:** Transactions can only read committed changes, preventing dirty reads but allowing non-repeatable reads and phantom reads.
+3. **Repeatable Read:** Ensures that once a transaction reads a row, it will see the same data upon re-reading, avoiding non-repeatable reads but still allowing phantom reads.
+4. **Serializable:** Provides the highest level of isolation, ensuring that transactions execute in a fully isolated manner, as if they were serialized. This level prevents all types of inconsistent reads.
+
+### Example Scenario
+
+Consider an e-commerce application where multiple users might try to purchase the last available item simultaneously:
+
+- **Without Proper Concurrency Control:** Multiple users could potentially see the item as available and place orders, leading to over-selling.
+- **With Proper Concurrency Control:** The system would ensure that only one user can successfully complete the purchase, maintaining inventory accuracy.
+
+## Benefits of Concurrency Control
+
+- **Enhanced Performance:** Efficiently manages access to shared resources, reducing bottlenecks and improving response times.
+- **Data Integrity:** Prevents inconsistent states by controlling how transactions interact with each other.
+- **Scalability:** Supports higher levels of concurrency, enabling systems to handle more users and transactions simultaneously.
+
+## Implementation in Databases
+
+Most relational database management systems implement various concurrency control mechanisms. For example:
+
+- **SQL Server:** Uses locking and optimistic concurrency control features like snapshot isolation.
+- **MySQL/InnoDB:** Employs row-level locking and supports multiple isolation levels.
+- **PostgreSQL:** Offers multiversion concurrency control (MVCC), which provides snapshot isolation by maintaining versions of data rows.
+
+## Practical Example
+
+### Implementing Concurrency Control
+
+Let's consider implementing concurrency control using PostgreSQL with a simple banking transfer scenario:
+
+```sql
+-- Begin a transaction
+BEGIN;
+
+-- Set isolation level to SERIALIZABLE
+SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+
+-- Deduct amount from the source account
+UPDATE accounts SET balance = balance - 100 WHERE account_id = 1 RETURNING balance;
+
+-- Add amount to the destination account
+UPDATE accounts SET balance = balance + 100 WHERE account_id = 2 RETURNING balance;
+
+-- Commit the transaction
+COMMIT;
+```
+
+In this example:
+- The `BEGIN` statement starts a new transaction.
+- The isolation level is set to `SERIALIZABLE`, ensuring that the transaction executes as if it had exclusive access to the database.
+- Two `UPDATE` statements perform the fund transfer, and the `RETURNING` clause verifies the updated balances.
+- The `COMMIT` statement finalizes the transaction, making the changes permanent.
+
+## Conclusion
+
+Concurrency control is fundamental to ensuring reliable and efficient operation of database systems. By implementing appropriate mechanisms, you can maintain data integrity and consistency while maximizing performance and supporting high levels of concurrency. Understanding the trade-offs between different concurrency control methods and isolation levels helps in designing robust and scalable database applications.
+
+---
+
+## Chat2DB - AI Text2SQL Tool for Easy Database Management
+
+[![Click to use](/image/blog/chat2db.png)](https://app.chat2db.ai/)
+
+## What can Chat2DB do?
+
+- [AI SQL Editor](https://chat2db.ai/feature/AI%20SQL%20Editor)
+- [AI SQL Query Generator](https://chat2db.ai/feature/AI%20SQL%20Query%20Generator)
+- [Analyze Excel Data with AI](https://chat2db.ai/feature/Analyze%20Excel%20Data%20with%20AI)
+- [Best AI Tool for Data Analysis](https://chat2db.ai/feature/Best%20AI%20Tool%20for%20Data%20Analysis)
+- [AI Dashboard with Chat2DB](https://chat2db.ai/feature/AI%20Dashboard%20with%20Chat2DB)
+- [AI Database Client](https://chat2db.ai/feature/AI%20Database%20Client)

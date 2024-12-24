@@ -1,0 +1,166 @@
+---
+title: "What is Commit"
+description: "A Commit in the context of database management systems (DBMS) refers to the action of making changes performed during a transaction permanent."
+date: December 24, 2024
+---
+
+# What is Commit
+
+## Introduction to Commit
+
+A **Commit** in the context of database management systems (DBMS) refers to the action of making changes performed during a transaction permanent. Once a commit operation is executed, all changes are written to the database, and they become visible to other transactions. The concept of commit is integral to ensuring data integrity and consistency within a database system.
+
+### Key Characteristics
+
+- **Finality:** After a commit, the changes cannot be undone unless there is a compensating transaction.
+- **Visibility:** Changes made by a committed transaction become visible to other transactions that start after the commit.
+- **Durability:** Once a transaction is committed, its effects persist even if the system fails immediately after the commit.
+
+## ACID Properties and Commit
+
+The commit operation plays a crucial role in maintaining the **ACID** properties of transactions:
+
+1. **Atomicity:** Ensures that all operations within a transaction are completed successfully as a single unit of work; otherwise, the transaction is aborted, and no changes are applied.
+2. **Consistency:** Guarantees that a transaction brings the database from one valid state to another, maintaining database invariants.
+3. **Isolation:** Provides the illusion that transactions are processed serially, even though they may be processed concurrently.
+4. **Durability:** Ensures that once a transaction has been committed, it will remain so, even in the case of a system failure.
+
+## How Commit Works
+
+### Transaction Lifecycle
+
+1. **Begin Transaction:** Starts a new transaction.
+2. **Execute Operations:** Performs various read/write operations on the database.
+3. **Prepare Phase (Optional):** Some systems have a prepare phase where they check if the commit can proceed without violating any constraints.
+4. **Commit:** Finalizes the transaction, making all changes permanent.
+5. **End Transaction:** Concludes the transaction.
+
+### Example Scenario
+
+Consider a banking application that transfers funds between two accounts. This operation involves multiple steps that must all succeed for the transfer to be valid.
+
+```sql
+BEGIN TRANSACTION;
+
+-- Deduct amount from the source account
+UPDATE accounts SET balance = balance - 100 WHERE account_id = 1;
+
+-- Add amount to the destination account
+UPDATE accounts SET balance = balance + 100 WHERE account_id = 2;
+
+COMMIT;
+```
+
+In this scenario:
+
+- If both `UPDATE` statements succeed, the `COMMIT` statement makes these changes permanent.
+- If an error occurs before committing, the transaction can be rolled back, undoing any changes made during the transaction.
+
+## Benefits of Commit
+
+- **Data Integrity:** Ensures that only consistent and complete sets of changes are applied to the database.
+- **Concurrency Control:** Helps manage concurrent transactions, ensuring that they do not interfere with each other.
+- **Recovery:** Facilitates recovery mechanisms, allowing databases to restore to a consistent state after failures.
+
+## Implementation in Databases
+
+Most relational database management systems provide commands for managing transactions, including commit operations. For example:
+
+- **SQL Server:**
+
+  sql
+
+  深色版本
+
+  
+
+  ```
+  BEGIN TRANSACTION;
+  -- SQL statements here
+  COMMIT;
+  ```
+
+- **MySQL/InnoDB:**
+
+  sql
+
+  深色版本
+
+  
+
+  ```
+  START TRANSACTION;
+  -- SQL statements here
+  COMMIT;
+  ```
+
+- **PostgreSQL:**
+
+  sql
+
+  深色版本
+
+  
+
+  ```
+  BEGIN;
+  -- SQL statements here
+  COMMIT;
+  ```
+
+## Practical Example
+
+### Using Transactions and Commit
+
+Let's look at how to use transactions and commit in a practical example using PostgreSQL:
+
+sql
+
+深色版本
+
+
+
+```
+-- Start a transaction block
+BEGIN;
+
+-- Insert a new employee record
+INSERT INTO employees (employee_id, first_name, last_name, department)
+VALUES (101, 'Alice', 'Smith', 'Engineering');
+
+-- Update the department budget to account for the new hire
+UPDATE departments SET budget = budget - 60000 WHERE department_name = 'Engineering';
+
+-- Commit the transaction to make changes permanent
+COMMIT;
+
+-- Query to verify changes
+SELECT * FROM employees WHERE employee_id = 101;
+SELECT * FROM departments WHERE department_name = 'Engineering';
+```
+
+In this example:
+
+- A transaction block begins with `BEGIN`.
+- Two operations are performed: inserting a new employee and updating the department's budget.
+- The `COMMIT` statement finalizes these changes, making them visible to other transactions.
+- Subsequent queries confirm that the changes have been successfully applied.
+
+## Conclusion
+
+Understanding the commit operation is essential for managing transactions effectively and ensuring data integrity and consistency in database systems. By properly using commit along with other transaction control commands, you can maintain reliable and robust database applications.
+
+---
+
+## Chat2DB - AI Text2SQL Tool for Easy Database Management
+
+[![Click to use](/image/blog/chat2db.png)](https://app.chat2db.ai/)
+
+## What can Chat2DB do?
+
+- [AI SQL Editor](https://chat2db.ai/feature/AI%20SQL%20Editor)
+- [AI SQL Query Generator](https://chat2db.ai/feature/AI%20SQL%20Query%20Generator)
+- [Analyze Excel Data with AI](https://chat2db.ai/feature/Analyze%20Excel%20Data%20with%20AI)
+- [Best AI Tool for Data Analysis](https://chat2db.ai/feature/Best%20AI%20Tool%20for%20Data%20Analysis)
+- [AI Dashboard with Chat2DB](https://chat2db.ai/feature/AI%20Dashboard%20with%20Chat2DB)
+- [AI Database Client](https://chat2db.ai/feature/AI%20Database%20Client)

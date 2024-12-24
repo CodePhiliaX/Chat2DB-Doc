@@ -1,0 +1,129 @@
+---
+title: "What is Gather Statistics"
+description: "Gather Statistics refers to the process of collecting and storing information about the structure and content of database objects, such as tables, indexes, and columns."
+date: December 24, 2024
+---
+
+# What is Gather Statistics
+
+## Introduction to Gather Statistics
+
+**Gather Statistics** refers to the process of collecting and storing information about the structure and content of database objects, such as tables, indexes, and columns. This information, known as **statistics**, is used by the database's query optimizer to make informed decisions about how to execute queries efficiently. Accurate statistics are crucial for optimizing query performance, ensuring that the optimizer can choose the best execution plan for each query.
+
+### Key Characteristics
+
+- **Performance Optimization:** Helps the query optimizer select efficient execution plans.
+- **Data Distribution:** Provides insights into data distribution within tables and columns.
+- **Index Usage:** Assists in determining the most effective use of indexes.
+- **Maintenance:** Requires periodic updates to reflect changes in data distribution over time.
+
+## Types of Statistics
+
+### 1. **Table-Level Statistics**
+
+Includes information about the number of rows, average row length, and block space usage.
+
+### 2. **Column-Level Statistics**
+
+Provides details on the distribution of values within columns, including:
+- **Number of Distinct Values:** How many unique values exist in a column.
+- **Null Counts:** The number of NULL values.
+- **Density:** A measure of how evenly distributed the values are.
+- **Histograms:** Detailed distributions of column values, useful for skewed data.
+
+### 3. **Index-Level Statistics**
+
+Contains information about index structures, such as:
+- **Leaf Blocks:** Number of leaf blocks in the index.
+- **Distinct Keys:** Number of distinct keys in the index.
+- **Clustering Factor:** Measures how well the index matches the table's row order.
+
+## Importance of Gathering Statistics
+
+- **Optimized Query Plans:** Ensures that the query optimizer has accurate information to choose the most efficient execution paths.
+- **Improved Performance:** Reduces the likelihood of suboptimal query execution plans, leading to faster query responses.
+- **Resource Utilization:** Helps in better allocation and utilization of database resources.
+- **Maintaining Integrity:** Keeps the optimizer's assumptions aligned with the actual state of the data.
+
+## Example: Gathering Statistics in SQL
+
+### Scenario
+
+Consider a table `employees` in an Oracle database that frequently undergoes inserts, updates, and deletes. To ensure optimal query performance, you need to gather statistics on this table.
+
+### Syntax for Gathering Statistics
+
+#### Oracle Database
+
+```sql
+BEGIN
+   DBMS_STATS.GATHER_TABLE_STATS (
+      ownname => 'HR',               -- Schema name
+      tabname => 'EMPLOYEES',        -- Table name
+      estimate_percent => DBMS_STATS.AUTO_SAMPLE_SIZE, -- Automatic sample size
+      method_opt => 'FOR ALL COLUMNS SIZE AUTO',       -- Automatically determine histogram settings
+      cascade => TRUE                -- Gather statistics on indexes as well
+   );
+END;
+/
+```
+
+#### Explanation
+
+- **ownname:** Specifies the schema name where the table resides.
+- **tabname:** The name of the table for which to gather statistics.
+- **estimate_percent:** Determines the percentage of rows to sample. Using `DBMS_STATS.AUTO_SAMPLE_SIZE` allows Oracle to automatically determine the appropriate sample size.
+- **method_opt:** Specifies options for gathering histograms. `'FOR ALL COLUMNS SIZE AUTO'` lets Oracle decide the best histogram settings.
+- **cascade:** If set to `TRUE`, it gathers statistics on related indexes as well.
+
+### MySQL Database
+
+In MySQL, statistics gathering is more automated and generally does not require explicit commands like in Oracle. However, you can manually analyze tables using:
+
+```sql
+ANALYZE TABLE employees;
+```
+
+This command updates key distribution statistics and helps the optimizer make better choices.
+
+### PostgreSQL Database
+
+For PostgreSQL, you can use the `ANALYZE` command:
+
+```sql
+ANALYZE employees;
+```
+
+Or for more detailed control:
+
+```sql
+VACUUM ANALYZE employees;
+```
+
+The `VACUUM ANALYZE` command also reclaims storage occupied by dead tuples, improving performance and maintaining database integrity.
+
+## Considerations
+
+- **Frequency:** Statistics should be gathered periodically or after significant changes to the data to keep them up-to-date.
+- **Impact on Performance:** Gathering statistics can be resource-intensive, so it's important to schedule these operations during off-peak hours.
+- **Automation:** Many databases offer automated statistics gathering mechanisms that can be configured based on data change thresholds or schedules.
+- **Customization:** For large or complex databases, customizing the statistics gathering process (e.g., choosing specific columns or adjusting sampling rates) can lead to better optimization.
+
+## Conclusion
+
+Gathering statistics is a critical practice for maintaining high-performance database systems. By providing the query optimizer with accurate and up-to-date information about the data, it ensures that queries are executed efficiently, leading to improved application performance and user satisfaction. Understanding how to gather and maintain statistics effectively is essential for database administrators and developers alike.
+
+---
+
+## Chat2DB - AI Text2SQL Tool for Easy Database Management
+
+[![Click to use](/image/blog/chat2db.png)](https://app.chat2db.ai/)
+
+## What can Chat2DB do?
+
+- [AI SQL Editor](https://chat2db.ai/feature/AI%20SQL%20Editor)
+- [AI SQL Query Generator](https://chat2db.ai/feature/AI%20SQL%20Query%20Generator)
+- [Analyze Excel Data with AI](https://chat2db.ai/feature/Analyze%20Excel%20Data%20with%20AI)
+- [Best AI Tool for Data Analysis](https://chat2db.ai/feature/Best%20AI%20Tool%20for%20Data%20Analysis)
+- [AI Dashboard with Chat2DB](https://chat2db.ai/feature/AI%20Dashboard%20with%20Chat2DB)
+- [AI Database Client](https://chat2db.ai/feature/AI%20Database%20Client)

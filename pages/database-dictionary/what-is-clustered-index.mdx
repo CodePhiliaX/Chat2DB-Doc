@@ -1,0 +1,116 @@
+---
+title: "What is Clustered Index"
+description: "A Clustered Index is a type of database index that determines the physical order of data in a table."
+date: December 24, 2024
+---
+
+# What is Clustered Index
+
+## Introduction to Clustered Index
+
+A **Clustered Index** is a type of database index that determines the physical order of data in a table. Unlike non-clustered indexes, which store pointers to the data rows, a clustered index reorders the actual data rows in the table based on the indexed columns. Because the data is physically ordered, a table can have only one clustered index.
+
+### Key Characteristics
+
+- **Physical Ordering:** Data in the table is stored in the order defined by the clustered index.
+- **Single Per Table:** Only one clustered index can be created per table since the data can only be sorted in one way.
+- **Efficient Range Queries:** Particularly efficient for range queries and sorting operations because the data is already in the required order.
+
+## How Clustered Indexes Work
+
+### Storage Structure
+
+- **Leaf Nodes:** Contain the actual data rows of the table. Each leaf node contains all columns of the row.
+- **Non-leaf Nodes:** Act as guideposts to direct searches to the appropriate leaf nodes.
+
+### Data Retrieval
+
+When a query is executed:
+
+1. **Index Search:** The database engine starts at the root of the B-tree structure (if it's not a small table).
+2. **Traversal:** It traverses down the tree following pointers until it reaches the leaf node containing the desired data.
+3. **Data Access:** Since the data is stored in the leaf nodes, once the correct node is found, the data can be accessed directly.
+
+### Example Scenario
+
+Consider a `students` table with a clustered index on the `student_id` column:
+
+```sql
+CREATE TABLE students (
+    student_id INT PRIMARY KEY,
+    name VARCHAR(100),
+    major VARCHAR(50)
+);
+```
+
+In this case:
+- The `student_id` column serves as the clustered index, meaning the data rows are physically ordered by `student_id`.
+- A query like `SELECT * FROM students WHERE student_id = 123;` can quickly locate the record for student ID 123 without needing to scan the entire table.
+
+## Benefits of Clustered Indexes
+
+- **Fast Lookup:** Provides fast access to data for queries that search or sort by the indexed columns.
+- **Range Queries:** Especially beneficial for queries that involve range conditions (`BETWEEN`, `>`, `<`, etc.) on the indexed columns.
+- **Unique Keys:** Ideal for primary keys and other unique keys, ensuring that each row can be uniquely identified.
+
+## Considerations
+
+- **Insert Performance:** Inserting new rows into a clustered index can be slower if the insertion point requires rearranging existing data to maintain order.
+- **Update Performance:** Updating the indexed column can also lead to performance overhead due to the need to reorder data.
+- **Storage Overhead:** While clustered indexes do not add extra storage for index structures beyond the data itself, they can still impact overall storage requirements depending on the data distribution.
+
+## Implementation in Databases
+
+Most relational database management systems support clustered indexes. For example:
+
+- **SQL Server:** Automatically creates a clustered index when you define a primary key unless specified otherwise.
+- **MySQL/InnoDB:** Supports clustered indexes, typically using the primary key as the clustering key.
+- **PostgreSQL:** Does not natively support clustered indexes but offers similar functionality through CLUSTER commands and indexing strategies.
+
+## Practical Example
+
+### Creating a Clustered Index
+
+Let's create a table and explicitly define a clustered index:
+
+```sql
+-- Create a table with a clustered index on the 'order_date' column
+CREATE TABLE orders (
+    order_id INT PRIMARY KEY,
+    customer_id INT,
+    order_date DATE,
+    total_amount DECIMAL(10, 2)
+) CLUSTERED INDEX ON order_date;
+
+-- Insert some sample data
+INSERT INTO orders (order_id, customer_id, order_date, total_amount) VALUES
+(1, 100, '2024-01-15', 150.00),
+(2, 101, '2024-01-16', 200.00),
+(3, 102, '2024-01-17', 250.00);
+
+-- Query to find orders within a date range
+SELECT * FROM orders WHERE order_date BETWEEN '2024-01-15' AND '2024-01-17';
+```
+
+In this example:
+- The `orders` table has a clustered index on the `order_date` column, which means the data is physically ordered by this column.
+- Queries that filter or sort by `order_date` can benefit from this ordering, leading to faster execution.
+
+## Conclusion
+
+Understanding how clustered indexes work and their implications on performance and storage is crucial for optimizing database design and query performance. By carefully selecting which column(s) to use as a clustered index, you can enhance the efficiency of your database operations.
+
+---
+
+## Chat2DB - AI Text2SQL Tool for Easy Database Management
+
+[![Click to use](/image/blog/chat2db.png)](https://app.chat2db.ai/)
+
+## What can Chat2DB do?
+
+- [AI SQL Editor](https://chat2db.ai/feature/AI%20SQL%20Editor)
+- [AI SQL Query Generator](https://chat2db.ai/feature/AI%20SQL%20Query%20Generator)
+- [Analyze Excel Data with AI](https://chat2db.ai/feature/Analyze%20Excel%20Data%20with%20AI)
+- [Best AI Tool for Data Analysis](https://chat2db.ai/feature/Best%20AI%20Tool%20for%20Data%20Analysis)
+- [AI Dashboard with Chat2DB](https://chat2db.ai/feature/AI%20Dashboard%20with%20Chat2DB)
+- [AI Database Client](https://chat2db.ai/feature/AI%20Database%20Client)
