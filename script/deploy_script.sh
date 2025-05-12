@@ -22,3 +22,6 @@ scp deploy.tar.gz package.json package-lock.json root@47.89.251.23:/root/Chat2DB
 
 echo "在国外服务器上解压文件, 并重启服务"
 ssh root@47.89.251.23 "cd /root/Chat2DB-Doc && rm -rf .next && tar -xzvf deploy.tar.gz --warning=no-unknown-keyword && pm2 restart Chat2DB-Doc"
+
+# 生成爬虫文件
+npx -y llmstxt gen https://chat2db.ai/sitemap-1.xml > public/llms.txt
