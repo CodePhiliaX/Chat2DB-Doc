@@ -1,0 +1,303 @@
+---
+title: "PostGIS Tutorial: Spatial Queries in PostgreSQL"
+description: "Learn PostGIS from scratch: install the extension, load geometry, understand SRIDs, build GiST indexes, and write distance and containment queries."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 7, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# PostGIS Tutorial: Spatial Queries in PostgreSQL
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 7, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+PostGIS turns PostgreSQL into a spatial database — points, lines and polygons become first-class data types with their own operators and indexes. "Find every store within 5 km of this location, ordered by distance" becomes a single indexed query.
+
+This tutorial covers the parts that actually trip people up: choosing between `geometry` and `geography`, understanding SRIDs, and writing distance queries that use the index instead of scanning the table.
+
+## Installing
+
+PostGIS ships as an extension. On Debian or Ubuntu:
+
+```bash
+sudo apt install postgresql-16-postgis-3 postgresql-16-postgis-3-scripts
+```
+
+On macOS with Homebrew, `brew install postgis`. Then enable it inside the database:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS postgis;
+
+-- Optional but frequently useful
+CREATE EXTENSION IF NOT EXISTS postgis_topology;
+CREATE EXTENSION IF NOT EXISTS fuzzystrmatch;      -- required by tiger geocoder
+CREATE EXTENSION IF NOT EXISTS postgis_tiger_geocoder;
+
+SELECT postgis_full_version();
+```
+
+The extension is per-database, not per-cluster — creating it in one database does not enable it in another.
+
+## geometry vs geography
+
+This is the first real decision, and the source of most confusion.
+
+**`geometry`** treats coordinates as points on a flat plane. Calculations are fast because they are plain Cartesian arithmetic. Distances come back in whatever unit the coordinate system uses — for the common SRID 4326 (WGS 84 latitude/longitude), that unit is **degrees**, which is almost never what you want.
+
+**`geography`** treats coordinates as points on a sphere. Calculations are slower but distances come back in **metres**, and they are correct across long distances and near the poles.
+
+The difference is not academic:
+
+```sql
+-- New York to London
+SELECT
+  ST_Distance(
+    'SRID=4326;POINT(-74.0060 40.7128)'::geometry,
+    'SRID=4326;POINT(-0.1276 51.5072)'::geometry
+  ) AS degrees_meaningless,
+  ST_Distance(
+    'SRID=4326;POINT(-74.0060 40.7128)'::geography,
+    'SRID=4326;POINT(-0.1276 51.5072)'::geography
+  ) AS metres;
+```
+
+The `geometry` result is about 73.9 — a number in degrees that has no useful physical meaning, since a degree of longitude is roughly 111 km at the equator and near zero at the poles. The `geography` result is about 5,570,000 metres, which is the real great-circle distance.
+
+**The rule:** if you are working with latitude/longitude across a wide area, use `geography`. If your data covers a small region and you have projected it into a local coordinate system with metre units, use `geometry` — it is faster and supports more functions.
+
+## Creating spatial tables
+
+Declare the type, dimension and SRID explicitly:
+
+```sql
+CREATE TABLE stores (
+  id        bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  name      text NOT NULL,
+  address   text,
+  location  geography(Point, 4326) NOT NULL
+);
+
+CREATE TABLE delivery_zones (
+  id       bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  name     text NOT NULL,
+  boundary geography(Polygon, 4326) NOT NULL
+);
+```
+
+`geography(Point, 4326)` constrains the column to points in WGS 84. Without the type modifier, a column would accept any geometry type, and mixed-type columns break both queries and indexes.
+
+Insert using well-known text:
+
+```sql
+INSERT INTO stores (name, address, location) VALUES
+  ('Downtown',  '100 Main St',   ST_GeogFromText('SRID=4326;POINT(-74.0060 40.7128)')),
+  ('Riverside', '55 River Rd',   ST_GeogFromText('SRID=4326;POINT(-74.0150 40.7250)')),
+  ('Uptown',    '900 North Ave', ST_GeogFromText('SRID=4326;POINT(-73.9700 40.7900)'));
+```
+
+**Coordinate order is longitude first, then latitude.** This catches nearly everyone at least once — it is X then Y, not the lat/long order used in conversation. If your results place everything in the Indian Ocean off Africa, you have swapped them.
+
+If you have separate columns, `ST_MakePoint` is more convenient:
+
+```sql
+INSERT INTO stores (name, location)
+SELECT store_name,
+       ST_SetSRID(ST_MakePoint(lon, lat), 4326)::geography
+FROM staging_stores;
+```
+
+## Indexing
+
+Without an index every spatial query is a sequential scan. PostGIS uses GiST:
+
+```sql
+CREATE INDEX stores_location_idx ON stores USING GIST (location);
+CREATE INDEX zones_boundary_idx  ON delivery_zones USING GIST (boundary);
+
+ANALYZE stores;
+ANALYZE delivery_zones;
+```
+
+The index stores bounding boxes, not exact shapes. Queries run in two phases: the index filters candidates by bounding box, then the exact predicate is evaluated on the survivors. This is why the index works well for `ST_DWithin` and `ST_Intersects` but not for arbitrary expressions.
+
+## Distance queries
+
+Finding everything within a radius is the most common spatial query. Use `ST_DWithin`, not `ST_Distance`:
+
+```sql
+-- Correct: index-assisted
+SELECT id, name, address,
+       ST_Distance(location, ST_GeogFromText('SRID=4326;POINT(-74.0060 40.7128)')) AS metres
+FROM stores
+WHERE ST_DWithin(location, ST_GeogFromText('SRID=4326;POINT(-74.0060 40.7128)'), 5000)
+ORDER BY metres;
+```
+
+`ST_DWithin` is index-aware: it expands the search point's bounding box by the radius and uses the GiST index to find candidates. The equivalent-looking filter using `ST_Distance` is not:
+
+```sql
+-- Wrong: forces a full table scan
+SELECT * FROM stores
+WHERE ST_Distance(location, ST_GeogFromText('SRID=4326;POINT(-74.0060 40.7128)')) < 5000;
+```
+
+Because `ST_Distance` must be computed for every row before the comparison, the planner cannot use the index. On a large table this is the difference between milliseconds and minutes. Confirm with `EXPLAIN`:
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT id, name FROM stores
+WHERE ST_DWithin(location, ST_GeogFromText('SRID=4326;POINT(-74.0060 40.7128)'), 5000);
+```
+
+Look for `Index Scan using stores_location_idx`. A `Seq Scan` means something has defeated the index — usually a wrapped function or an SRID mismatch.
+
+## Nearest neighbour
+
+For "the 10 closest stores" regardless of distance, use the `<->` distance operator in `ORDER BY`. PostGIS turns this into an index-ordered scan that stops as soon as it has enough rows:
+
+```sql
+SELECT id, name,
+       ST_Distance(location, ST_GeogFromText('SRID=4326;POINT(-74.0060 40.7128)')) AS metres
+FROM stores
+ORDER BY location <-> ST_GeogFromText('SRID=4326;POINT(-74.0060 40.7128)')
+LIMIT 10;
+```
+
+This is a KNN index scan and it is dramatically faster than sorting the whole table by computed distance. The `<->` operator must appear directly in `ORDER BY` against an indexed column for this to work.
+
+## Containment: points in polygons
+
+"Which delivery zone covers this address?" is a containment query:
+
+```sql
+SELECT z.id, z.name
+FROM delivery_zones z
+WHERE ST_Covers(z.boundary, ST_GeogFromText('SRID=4326;POINT(-74.0060 40.7128)'));
+```
+
+For `geography`, use `ST_Covers` rather than `ST_Contains` — `ST_Contains` is a geometry-only function, and casting to geometry to use it silently reintroduces the planar-distance problem.
+
+Counting points per polygon is a spatial join:
+
+```sql
+SELECT z.name,
+       COUNT(s.id) AS store_count
+FROM delivery_zones z
+LEFT JOIN stores s ON ST_Covers(z.boundary, s.location)
+GROUP BY z.id, z.name
+ORDER BY store_count DESC;
+```
+
+Both GiST indexes are used here, making this efficient even with many zones and many stores.
+
+## Building polygons and buffers
+
+`ST_Buffer` creates a polygon at a fixed distance around a geometry — a service area, for instance:
+
+```sql
+-- 2 km service area around each store
+SELECT id, name,
+       ST_Buffer(location, 2000) AS service_area
+FROM stores;
+```
+
+On `geography`, the buffer distance is in metres. Find where two service areas overlap:
+
+```sql
+SELECT a.name AS store_a,
+       b.name AS store_b,
+       ST_Area(ST_Intersection(
+         ST_Buffer(a.location, 2000)::geometry,
+         ST_Buffer(b.location, 2000)::geometry
+       )::geography) AS overlap_sq_metres
+FROM stores a
+JOIN stores b ON a.id < b.id
+WHERE ST_DWithin(a.location, b.location, 4000)
+ORDER BY overlap_sq_metres DESC;
+```
+
+The `a.id < b.id` join condition avoids comparing each pair twice, and `ST_DWithin` prunes pairs that cannot possibly overlap before the expensive buffer computation runs.
+
+## Reprojecting
+
+If your data uses a different SRID, `ST_Transform` converts it. Projected coordinate systems give accurate local measurements in metres:
+
+```sql
+-- WGS 84 to Web Mercator (used by most web maps)
+SELECT ST_Transform(geom, 3857) FROM roads;
+
+-- WGS 84 to UTM zone 18N — accurate metres for the New York area
+SELECT ST_Transform(geom, 32618) FROM parcels;
+```
+
+Mixing SRIDs in one operation raises an error rather than producing silently wrong results, which is helpful. Check what you have:
+
+```sql
+SELECT f_table_name, f_geometry_column, coord_dimension, srid, type
+FROM geometry_columns;
+```
+
+## GeoJSON in and out
+
+For web applications, PostGIS speaks GeoJSON directly:
+
+```sql
+-- Geometry to GeoJSON
+SELECT id, name, ST_AsGeoJSON(location) AS geojson FROM stores;
+
+-- A complete FeatureCollection in one query
+SELECT json_build_object(
+  'type', 'FeatureCollection',
+  'features', json_agg(
+    json_build_object(
+      'type', 'Feature',
+      'geometry', ST_AsGeoJSON(location)::json,
+      'properties', json_build_object('id', id, 'name', name, 'address', address)
+    )
+  )
+) AS feature_collection
+FROM stores;
+
+-- GeoJSON back to geometry
+SELECT ST_GeomFromGeoJSON('{"type":"Point","coordinates":[-74.006,40.7128]}');
+```
+
+That second query returns a payload a mapping library can consume with no server-side transformation at all.
+
+## Validating geometry
+
+Imported polygons are frequently invalid — self-intersecting rings, duplicate points. Invalid geometry makes spatial predicates return wrong answers or error out.
+
+```sql
+SELECT id, name, ST_IsValidReason(boundary::geometry) AS problem
+FROM delivery_zones
+WHERE NOT ST_IsValid(boundary::geometry);
+
+-- Repair in place
+UPDATE delivery_zones
+SET boundary = ST_MakeValid(boundary::geometry)::geography
+WHERE NOT ST_IsValid(boundary::geometry);
+```
+
+Run this check after every bulk import.
+
+## Common mistakes
+
+**Latitude and longitude swapped.** `POINT(lon lat)`, always. Points appearing near (0,0) off West Africa are the classic symptom.
+
+**Using `ST_Distance` in a `WHERE` clause.** Use `ST_DWithin` so the index applies.
+
+**Using `geometry` with SRID 4326 and expecting metres.** You get degrees. Either use `geography` or reproject to a metre-based system.
+
+**Forgetting to `ANALYZE` after a bulk load.** Without statistics, the planner may not choose the spatial index at all.
+
+**Indexing an expression instead of the column.** `ST_Transform(geom, 3857)` in a `WHERE` clause cannot use an index on `geom`. Either store the projected geometry in its own column or build an expression index on the exact expression.
+
+## Summary
+
+PostGIS is a full spatial database inside PostgreSQL. Use `geography` for latitude/longitude work so distances come back in metres, always create a GiST index on spatial columns, and use `ST_DWithin` and the `<->` operator so the planner can actually use it.
+
+Reviewing spatial results is easier in a client that can display the underlying values alongside your query — [Chat2DB](https://chat2db.ai/download) connects to PostgreSQL with PostGIS and can help generate these queries, with a browser version at [app.chat2db.ai](https://app.chat2db.ai).

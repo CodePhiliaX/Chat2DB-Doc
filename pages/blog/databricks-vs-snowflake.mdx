@@ -1,0 +1,201 @@
+---
+title: "Databricks vs Snowflake: A Practical 2026 Comparison"
+description: "Databricks vs Snowflake compared on architecture, table formats, pricing, SQL performance and ML, with guidance on which fits your team."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 7, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# Databricks vs Snowflake: A Practical 2026 Comparison
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 7, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+These two platforms started from opposite ends and converged. Snowflake was a cloud data warehouse that added data science capabilities. Databricks was a Spark platform that added a SQL warehouse. In 2026 both claim to be the single platform for analytics and ML — but their origins still shape what each does well.
+
+## Where each came from, and why it matters
+
+**Snowflake** was built as a warehouse: structured and semi-structured data, ANSI SQL, separated storage and compute, and a deliberate policy of hiding infrastructure. You create a virtual warehouse by choosing a T-shirt size. There are no clusters to tune, no file formats to choose, no compaction to schedule. That opinionated simplicity is the product.
+
+**Databricks** was built around Apache Spark and the lakehouse idea: your data stays in your own object storage as open-format files, and compute engines read it in place. Delta Lake added ACID transactions, time travel and schema enforcement on top of Parquet. Databricks SQL then added a proper SQL warehouse experience over the same files.
+
+The practical consequence: in Snowflake your data lives in Snowflake's managed storage in a proprietary format, and everything must go through Snowflake to read it. In Databricks your data sits in S3, ADLS or GCS as Delta or Iceberg tables that Spark, Trino, DuckDB or anything else can read directly.
+
+## Table formats and openness
+
+This is the most consequential difference and the one most easily overlooked.
+
+```sql
+-- Databricks: a Delta table in your own storage
+CREATE TABLE sales.fact_orders (
+  order_id    BIGINT,
+  customer_id BIGINT,
+  order_ts    TIMESTAMP,
+  amount      DECIMAL(14,2)
+)
+USING DELTA
+PARTITIONED BY (DATE(order_ts))
+LOCATION 's3://my-lake/warehouse/sales/fact_orders';
+```
+
+Those Parquet files and the `_delta_log` transaction log are in your bucket. If you stop paying Databricks tomorrow, the data is still queryable by any Delta-compatible reader.
+
+Delta's time travel falls out of the transaction log:
+
+```sql
+-- Read the table as it was 7 versions ago
+SELECT * FROM sales.fact_orders VERSION AS OF 7;
+
+-- Or as of a timestamp
+SELECT * FROM sales.fact_orders TIMESTAMP AS OF '2026-09-01 00:00:00';
+
+-- What changed between two versions
+SELECT * FROM table_changes('sales.fact_orders', 5, 7);
+```
+
+Snowflake also offers time travel, but bounded by a retention period (up to 90 days on Enterprise) and within Snowflake's own storage:
+
+```sql
+SELECT * FROM fact_orders AT(OFFSET => -3600);       -- one hour ago
+SELECT * FROM fact_orders BEFORE(STATEMENT => '01a2...');
+
+-- Restore a dropped table within the retention window
+UNDROP TABLE fact_orders;
+```
+
+Snowflake has since added Iceberg table support, letting you keep data in your own storage in an open format, which narrows this gap considerably. It is worth evaluating if openness matters to you but Snowflake otherwise fits.
+
+## SQL and performance
+
+For straightforward analytical SQL over well-modelled tables, both are fast and the difference will not decide your architecture.
+
+Snowflake requires almost no physical tuning. Micro-partitions are created and pruned automatically. When a very large table needs help, you add a clustering key:
+
+```sql
+ALTER TABLE fact_orders CLUSTER BY (order_ts, customer_id);
+
+-- Check whether clustering is actually helping
+SELECT SYSTEM$CLUSTERING_INFORMATION('fact_orders', '(order_ts, customer_id)');
+```
+
+Databricks gives you more knobs and expects you to use some of them. Liquid clustering has largely replaced manual partitioning:
+
+```sql
+-- Liquid clustering: adapts without repartitioning the table
+ALTER TABLE sales.fact_orders CLUSTER BY (order_ts, customer_id);
+
+-- Compact small files and co-locate data
+OPTIMIZE sales.fact_orders ZORDER BY (customer_id);
+
+-- Reclaim storage from old versions (after the time-travel window you need)
+VACUUM sales.fact_orders RETAIN 168 HOURS;
+```
+
+The small-file problem is real on Databricks and does not exist on Snowflake. Streaming ingestion produces many small Parquet files, and query performance degrades until they are compacted. Predictive optimization automates `OPTIMIZE` and `VACUUM` now, but it is still a thing you must know about.
+
+Conversely, Databricks lets you drop out of SQL when SQL is the wrong tool:
+
+```python
+# Databricks: complex logic in Python over the same table
+df = spark.read.table("sales.fact_orders")
+result = (df.filter(df.order_ts >= "2026-01-01")
+            .groupBy("customer_id")
+            .agg(F.sum("amount").alias("ltv"),
+                 F.countDistinct("order_id").alias("orders")))
+result.write.mode("overwrite").saveAsTable("sales.customer_ltv")
+```
+
+Snowflake answers this with Snowpark, which offers a DataFrame API in Python, Java and Scala that compiles to SQL executed in Snowflake. It covers a lot of ground, but it is not full Spark — genuinely arbitrary distributed computation remains Databricks' territory.
+
+## Machine learning
+
+If ML is central to your work, this is where the platforms genuinely differ.
+
+Databricks includes MLflow for experiment tracking, a model registry, feature store, model serving endpoints, and full GPU cluster support for deep learning. It is an end-to-end ML platform that happens to have a warehouse attached.
+
+Snowflake covers a narrower band well. Snowpark ML handles feature engineering and training on Snowflake compute, Cortex provides hosted LLM functions callable from SQL, and Snowpark Container Services runs custom workloads:
+
+```sql
+-- Snowflake Cortex: LLM inference directly in SQL
+SELECT review_id,
+       SNOWFLAKE.CORTEX.SENTIMENT(review_text)               AS sentiment,
+       SNOWFLAKE.CORTEX.SUMMARIZE(review_text)               AS summary
+FROM customer_reviews
+WHERE created_at >= DATEADD(day, -7, CURRENT_DATE());
+```
+
+That is genuinely useful and requires no ML infrastructure at all. But training a custom deep learning model on GPUs against terabytes of unstructured data is a Databricks job.
+
+## Pricing
+
+Both bill compute by the second with a separation between storage and compute, and both are easy to overspend on.
+
+| | Snowflake | Databricks |
+| --- | --- | --- |
+| Unit | Credits per warehouse-second | DBUs per cluster-second |
+| Cloud infra | Included in the credit | Billed separately by your cloud provider |
+| Storage | Snowflake-managed, billed by Snowflake | Your own bucket, billed by your cloud |
+| Idle | Auto-suspend to near zero | Auto-terminate to zero |
+| Minimum | 60 seconds per resume | Varies by compute type |
+
+The critical difference: a Databricks DBU is **on top of** the underlying EC2/VM cost, whereas a Snowflake credit is all-in. Comparing a DBU rate against a credit rate directly will mislead you.
+
+Both need spend guardrails from day one. In Snowflake:
+
+```sql
+CREATE RESOURCE MONITOR monthly_cap WITH
+  CREDIT_QUOTA = 1000
+  FREQUENCY = MONTHLY
+  TRIGGERS ON 90 PERCENT DO NOTIFY
+           ON 100 PERCENT DO SUSPEND;
+```
+
+In Databricks, set cluster policies that cap node counts and instance types, enforce auto-termination, and tag clusters so cost is attributable per team.
+
+## Governance
+
+Databricks Unity Catalog and Snowflake's native RBAC both provide table-, column- and row-level control, lineage and audit. Unity Catalog reaches slightly further because it governs unstructured files and ML models alongside tables. Snowflake's is simpler to operate.
+
+Row-level security looks similar in both. Snowflake:
+
+```sql
+CREATE ROW ACCESS POLICY region_policy AS (region string) RETURNS BOOLEAN ->
+  CURRENT_ROLE() = 'ADMIN'
+  OR region = CURRENT_ACCOUNT_REGION();
+
+ALTER TABLE fact_orders ADD ROW ACCESS POLICY region_policy ON (region);
+```
+
+Databricks:
+
+```sql
+CREATE FUNCTION region_filter(region STRING)
+RETURN is_account_group_member('admins') OR region = current_user_region();
+
+ALTER TABLE sales.fact_orders SET ROW FILTER region_filter ON (region);
+```
+
+Snowflake's data sharing remains distinctive: granting another Snowflake account live read access to your data with no copying and no pipeline. Databricks Delta Sharing is the open-protocol equivalent and works across platforms, which is arguably better architecturally, though less frictionless within a single vendor.
+
+## Which to choose
+
+**Choose Snowflake** if your centre of gravity is BI and analytics, your team is SQL-first, you want minimal infrastructure work, or you exchange data with partners who also use Snowflake. It is the lower-operations option and analysts are productive on it immediately.
+
+**Choose Databricks** if you have substantial data engineering, you need Spark for transformations that do not fit SQL, ML is a first-class workload, you process unstructured data at scale, or you require open table formats in your own storage.
+
+**Signals you want Databricks:** your pipeline already runs Spark; you train models on GPUs; you process images, audio or documents; vendor lock-in on storage is a stated constraint.
+
+**Signals you want Snowflake:** your transformations are dbt models; your consumers are analysts and dashboards; you have no platform engineer to own cluster configuration; time-to-first-dashboard matters more than architectural flexibility.
+
+Many organisations run both — Databricks for engineering and ML over the lake, Snowflake for serving curated marts to the business. With Iceberg support on both sides this is less duplicative than it once was, though it is still two platforms to pay for and govern.
+
+Either way, a SQL client that connects to both keeps exploratory work in one place. [Chat2DB](https://chat2db.ai/download) supports Databricks SQL warehouses and Snowflake alongside conventional databases, with AI-assisted query generation per dialect; the web version is at [app.chat2db.ai](https://app.chat2db.ai).
+
+## Summary
+
+Snowflake optimizes for simplicity and analyst productivity, with proprietary managed storage (now optionally Iceberg) and near-zero tuning. Databricks optimizes for flexibility and engineering power, with open formats in your own storage, real Spark, and a complete ML platform — at the cost of more decisions to make and more operational awareness required.
+
+Neither is meaningfully faster than the other for ordinary SQL analytics. Choose on where your team's work actually sits: if it is mostly SQL and dashboards, Snowflake; if it is pipelines, Python and models, Databricks.

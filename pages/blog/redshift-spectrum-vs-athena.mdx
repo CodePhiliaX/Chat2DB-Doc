@@ -1,0 +1,214 @@
+---
+title: "Redshift Spectrum vs Athena: Which to Use for S3 Data"
+description: "Redshift Spectrum vs Amazon Athena compared on pricing, performance, joins and setup. Learn when to query S3 from your warehouse instead."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 7, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# Redshift Spectrum vs Athena: Which to Use for S3 Data
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 7, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+Both let you run SQL against files in S3 without loading them anywhere. Both read the AWS Glue Data Catalog, both bill by bytes scanned, and both want your data in columnar formats. They solve overlapping problems from different directions, and the right choice usually comes down to one question: do you need to join S3 data to warehouse tables?
+
+## The core difference
+
+**Athena** is standalone. It is a serverless Trino-based engine with no cluster, no warehouse and no dependency on Redshift. You point it at the Glue Catalog and query. There is nothing to provision and nothing running when you are idle.
+
+**Redshift Spectrum** is a feature *of* Redshift. It extends an existing Redshift cluster or serverless workgroup so it can read S3 as external tables. Crucially, those external tables can be joined to your regular Redshift tables in a single query.
+
+If you have no Redshift, Spectrum is not an option. If you have Redshift and need warehouse-to-lake joins, Athena cannot do it in one statement.
+
+## Setting up the shared catalog
+
+Both read the same Glue Catalog, so table definitions can be shared. Define the table once in Athena:
+
+```sql
+CREATE EXTERNAL TABLE lake.orders_archive (
+  order_id    bigint,
+  customer_id bigint,
+  order_ts    timestamp,
+  amount      decimal(14,2),
+  status      string
+)
+PARTITIONED BY (order_year int, order_month int)
+STORED AS PARQUET
+LOCATION 's3://my-lake/orders/';
+
+-- Discover existing partitions
+MSCK REPAIR TABLE lake.orders_archive;
+```
+
+For tables with many partitions, use partition projection instead — it computes partition locations from a rule rather than storing them, which removes the metadata lookup entirely:
+
+```sql
+ALTER TABLE lake.orders_archive SET TBLPROPERTIES (
+  'projection.enabled'          = 'true',
+  'projection.order_year.type'  = 'integer',
+  'projection.order_year.range' = '2019,2026',
+  'projection.order_month.type' = 'integer',
+  'projection.order_month.range'= '1,12',
+  'storage.location.template'   =
+    's3://my-lake/orders/order_year=${order_year}/order_month=${order_month}'
+);
+```
+
+Then expose the same catalog to Redshift:
+
+```sql
+CREATE EXTERNAL SCHEMA spectrum_lake
+FROM DATA CATALOG
+DATABASE 'lake'
+IAM_ROLE 'arn:aws:iam::123456789012:role/RedshiftSpectrumRole'
+CREATE EXTERNAL DATABASE IF NOT EXISTS;
+```
+
+One definition, two engines.
+
+## The join that only Spectrum can do
+
+This is the deciding capability. Suppose recent orders live in Redshift and everything older than two years has been archived to S3. A query spanning both:
+
+```sql
+SELECT c.customer_name,
+       c.segment,
+       SUM(recent.amount)   AS revenue_2026,
+       SUM(archived.amount) AS revenue_historical
+FROM sales.dim_customer c
+LEFT JOIN sales.fact_orders recent
+       ON recent.customer_key = c.customer_key
+LEFT JOIN spectrum_lake.orders_archive archived
+       ON archived.customer_id = c.customer_id
+      AND archived.order_year IN (2023, 2024)
+GROUP BY c.customer_name, c.segment
+ORDER BY revenue_historical DESC
+LIMIT 100;
+```
+
+`sales.dim_customer` and `sales.fact_orders` are Redshift tables; `spectrum_lake.orders_archive` is Parquet in S3. Redshift plans across both, pushing filtering and aggregation down to the Spectrum layer where it can.
+
+Athena cannot do this. It would require unloading the Redshift tables to S3 first, or running two queries and joining the results in application code. This single capability is why Spectrum exists.
+
+## Pricing
+
+The headline rate for scanned data is the same, and both round each query up to a 10 MB minimum. The difference is what else you are paying for.
+
+| | Athena | Redshift Spectrum |
+| --- | --- | --- |
+| Scan charge | Per TB scanned | Per TB scanned |
+| Base cost | None | Requires a running Redshift cluster/workgroup |
+| Idle cost | Zero | Cluster cost (provisioned) or zero (serverless idle) |
+| Compute for joins | Included | Uses your Redshift capacity |
+
+Athena is genuinely zero-cost when idle. Spectrum's scan charge is on top of Redshift capacity you are already paying for — which is free at the margin if the cluster exists anyway, and expensive if you would spin one up solely for Spectrum.
+
+Both charge for what the *files* force them to read, which is why file format dominates the bill. Converting CSV to partitioned, compressed Parquet routinely cuts scanned bytes by an order of magnitude:
+
+```sql
+-- Athena CTAS: convert and partition in one statement
+CREATE TABLE lake.orders_parquet
+WITH (
+  format = 'PARQUET',
+  parquet_compression = 'SNAPPY',
+  partitioned_by = ARRAY['order_year', 'order_month'],
+  external_location = 's3://my-lake/orders-parquet/'
+) AS
+SELECT order_id, customer_id, order_ts, amount, status,
+       year(order_ts)  AS order_year,
+       month(order_ts) AS order_month
+FROM lake.orders_csv;
+```
+
+Always check what a query will scan before running it at scale. Athena reports `DataScannedInBytes` per execution:
+
+```bash
+aws athena get-query-execution --query-execution-id abc-123 \
+  --query 'QueryExecution.Statistics.DataScannedInBytes'
+```
+
+For Spectrum, the system views show it:
+
+```sql
+SELECT query,
+       SUM(s3_scanned_bytes) / 1024 / 1024 / 1024 AS gb_scanned,
+       SUM(s3query_returned_rows)                  AS rows_returned
+FROM svl_s3query_summary
+WHERE starttime > DATEADD(day, -1, GETDATE())
+GROUP BY query
+ORDER BY gb_scanned DESC
+LIMIT 20;
+```
+
+## Performance
+
+For a straightforward scan-and-aggregate over well-partitioned Parquet, the two are broadly comparable. Differences appear at the edges.
+
+**Spectrum wins** when the query joins to Redshift tables (no data movement), when a small Redshift dimension can filter a large S3 fact table, and when you need result caching within a Redshift session.
+
+**Athena wins** when there is no Redshift cluster to contend with, when concurrency is spiky (Athena scales without affecting anything else), and when the query is purely over lake data with no warehouse involvement.
+
+Spectrum queries consume Redshift resources, so a heavy Spectrum scan can slow down your dashboards. If lake queries are frequent and unpredictable, isolating them in Athena protects warehouse performance — or on Redshift Serverless, use a separate workgroup.
+
+## Practices that matter for both
+
+**Partition on what you filter.** The single largest cost lever. Unpartitioned data means every query reads everything.
+
+```sql
+-- Reads only two month-partitions
+SELECT COUNT(*), SUM(amount)
+FROM spectrum_lake.orders_archive
+WHERE order_year = 2024 AND order_month IN (1, 2);
+```
+
+**Do not over-partition.** Partitioning by day *and* customer produces millions of tiny files; metadata overhead then exceeds the scan savings. Aim for partitions in the hundreds of megabytes.
+
+**Select only what you need.** Both are columnar-aware, so `SELECT *` on a 60-column table costs many times more than naming the four columns you want. This is the easiest cost saving available and the most commonly ignored.
+
+**Compact small files.** Thousands of tiny Parquet files hurt both engines badly, since per-file overhead dominates. Target 128 MB to 1 GB per file.
+
+**Prefer Parquet or ORC over CSV and JSON.** Row formats cannot skip columns and compress poorly, so every query pays full price.
+
+## Using both together
+
+They are complementary, and many teams run both against one catalog:
+
+- **Athena** for ad-hoc exploration, log analysis, data quality checks, and anything by users who should never touch the warehouse.
+- **Spectrum** for production queries in dashboards and pipelines that must join lake data to curated warehouse tables.
+
+Because both read the Glue Catalog, a table registered once is visible to both. Governance and schema stay in one place.
+
+A useful pattern is tiered storage: keep the last 12–24 months in Redshift for fast interactive queries, archive older partitions to S3 as Parquet, and expose them through Spectrum so long-range queries still work. Warehouse storage stays small while history remains queryable.
+
+```sql
+-- Archive an old partition out of Redshift
+UNLOAD ('SELECT * FROM sales.fact_orders WHERE order_ts < ''2024-01-01''')
+TO 's3://my-lake/orders/order_year=2023/'
+IAM_ROLE 'arn:aws:iam::123456789012:role/RedshiftSpectrumRole'
+FORMAT AS PARQUET
+PARTITION BY (order_year, order_month)
+ALLOWOVERWRITE;
+
+DELETE FROM sales.fact_orders WHERE order_ts < '2024-01-01';
+VACUUM sales.fact_orders;
+```
+
+## Choosing
+
+**Use Athena** if you have no Redshift cluster, your queries are purely over lake data, usage is intermittent, or you want lake analytics isolated from warehouse performance.
+
+**Use Spectrum** if you already run Redshift and need to join S3 data to warehouse tables, or you are implementing tiered storage where cold partitions must remain transparently queryable.
+
+**Use both** if you have a real lakehouse: Athena for exploration and Spectrum for production joins, sharing one Glue Catalog.
+
+Whichever you use, connecting from a single SQL client keeps context in one place — [Chat2DB](https://chat2db.ai/download) supports Redshift and Athena alongside conventional databases, with AI assistance for the dialect differences; there is also a browser version at [app.chat2db.ai](https://app.chat2db.ai).
+
+## Summary
+
+Athena is standalone and costs nothing when idle. Spectrum extends Redshift and can join S3 data to warehouse tables in one query — the capability Athena fundamentally lacks.
+
+For both, the bill is decided by file layout long before the SQL is written. Partitioned, compressed Parquet with sensibly sized files and explicit column lists will outperform and undercut any query tuning you do afterwards.

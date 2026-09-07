@@ -1,0 +1,269 @@
+---
+title: "Postgres pg_trgm: Fast Fuzzy Text Search with Trigrams"
+description: "Use pg_trgm for typo-tolerant search in PostgreSQL: similarity scoring, GIN vs GiST indexes, speeding up LIKE '%term%', and tuning the threshold."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 7, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# Postgres pg_trgm: Fast Fuzzy Text Search with Trigrams
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 7, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+A user searches for "Micheal Jonson" and your exact-match query returns nothing, even though "Michael Johnson" is right there in the table. `pg_trgm` fixes this. It also solves a separate and very common performance problem: making `LIKE '%term%'` use an index instead of scanning the whole table.
+
+## What a trigram is
+
+A trigram is a three-character substring. PostgreSQL decomposes text into all of them, padding the word boundaries:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+SELECT show_trgm('hello');
+--  {"  h"," he",ell,hel,llo,"lo "}
+```
+
+Two strings are similar when they share many trigrams. Similarity is the count of shared trigrams divided by the total number of distinct trigrams across both, giving a score from 0 to 1:
+
+```sql
+SELECT similarity('Michael Johnson', 'Micheal Jonson')  AS typo,      -- ~0.55
+       similarity('Michael Johnson', 'Michael Johnson') AS exact,     -- 1.0
+       similarity('Michael Johnson', 'Sarah Williams')  AS unrelated; -- 0.0
+```
+
+This is a purely lexical measure — no language model, no stemming, no dictionary. That is exactly why it handles typos, transpositions and misspellings well, and why it works identically across languages.
+
+## Setting up
+
+```sql
+CREATE TABLE customers (
+  id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  full_name  text NOT NULL,
+  email      text,
+  city       text
+);
+
+CREATE INDEX customers_name_trgm_idx
+  ON customers USING GIN (full_name gin_trgm_ops);
+
+ANALYZE customers;
+```
+
+`gin_trgm_ops` is the operator class that tells GIN to index trigrams. Without it you get a plain GIN index that does nothing useful for text similarity.
+
+## Fuzzy matching
+
+The `%` operator returns true when two strings exceed the similarity threshold, and it uses the index:
+
+```sql
+SELECT id, full_name, similarity(full_name, 'Micheal Jonson') AS score
+FROM customers
+WHERE full_name % 'Micheal Jonson'
+ORDER BY score DESC
+LIMIT 10;
+```
+
+The default threshold is 0.3. Adjust it for the session:
+
+```sql
+SET pg_trgm.similarity_threshold = 0.4;   -- stricter: fewer, better matches
+SHOW pg_trgm.similarity_threshold;
+```
+
+Lower values return more results with more noise; higher values risk missing genuine typos. For personal names, 0.3–0.4 works well. For short strings like product codes, go higher — short text has few trigrams, so scores are volatile.
+
+Set it permanently in `postgresql.conf`, or per-role:
+
+```sql
+ALTER DATABASE mydb SET pg_trgm.similarity_threshold = 0.35;
+```
+
+## Ranked nearest matches with `<->`
+
+When you want the closest matches regardless of threshold, use the distance operator (`1 - similarity`) in `ORDER BY`:
+
+```sql
+SELECT id, full_name, full_name <-> 'Micheal Jonson' AS distance
+FROM customers
+ORDER BY full_name <-> 'Micheal Jonson'
+LIMIT 10;
+```
+
+With a **GiST** index this becomes a KNN index scan that stops as soon as it has enough rows — very fast, and it never returns an empty result. GIN indexes do not support KNN ordering, so this pattern requires GiST:
+
+```sql
+CREATE INDEX customers_name_trgm_gist_idx
+  ON customers USING GIST (full_name gist_trgm_ops);
+```
+
+## GIN or GiST?
+
+| | GIN | GiST |
+| --- | --- | --- |
+| Lookup speed | Faster | Slower |
+| Build time | Slower | Faster |
+| Index size | Larger | Smaller |
+| Update cost | Higher | Lower |
+| KNN (`<->` ordering) | Not supported | Supported |
+
+**Use GIN** for read-heavy workloads with threshold matching (`%`) and `LIKE '%...%'` — the common case.
+
+**Use GiST** when you need `<->` KNN ordering, when writes are frequent, or when index size matters.
+
+Having both is legitimate if you need threshold matching *and* KNN ordering, at the cost of extra storage and write overhead.
+
+## Making `LIKE '%term%'` fast
+
+This is arguably the more valuable use of `pg_trgm`, and it is often overlooked.
+
+A leading wildcard defeats B-tree indexes entirely, because a B-tree can only seek on a known prefix:
+
+```sql
+-- Sequential scan, no matter what B-tree indexes exist
+SELECT * FROM customers WHERE full_name LIKE '%john%';
+```
+
+A trigram GIN index changes this. The planner extracts trigrams from the pattern and uses the index to find candidates:
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM customers WHERE full_name LIKE '%john%';
+--  Bitmap Heap Scan on customers
+--    Recheck Cond: (full_name ~~ '%john%'::text)
+--    ->  Bitmap Index Scan on customers_name_trgm_idx
+```
+
+This works for `LIKE`, `ILIKE`, and regular expression operators `~` and `~*`. It is one of the highest-leverage indexes available for search boxes over moderate-sized tables.
+
+One constraint: the pattern must contain at least one complete trigram. `LIKE '%ab%'` has only two characters and cannot use the index, so it falls back to a sequential scan.
+
+For case-insensitive matching, either use `ILIKE` (the index handles it) or index the lowercased expression:
+
+```sql
+CREATE INDEX customers_name_lower_trgm_idx
+  ON customers USING GIN (lower(full_name) gin_trgm_ops);
+
+-- The query must match the indexed expression exactly
+SELECT * FROM customers WHERE lower(full_name) LIKE '%john%';
+```
+
+## Searching several columns
+
+Concatenate into a single expression index rather than creating one index per column:
+
+```sql
+CREATE INDEX customers_search_trgm_idx ON customers
+USING GIN ((full_name || ' ' || COALESCE(email, '') || ' ' || COALESCE(city, '')) gin_trgm_ops);
+
+SELECT id, full_name, email, city
+FROM customers
+WHERE (full_name || ' ' || COALESCE(email, '') || ' ' || COALESCE(city, '')) % 'jonson berlin'
+LIMIT 20;
+```
+
+`COALESCE` is essential — concatenating NULL yields NULL, which would silently exclude every row with a missing email.
+
+A cleaner alternative is a generated column, which keeps queries readable:
+
+```sql
+ALTER TABLE customers ADD COLUMN search_text text
+  GENERATED ALWAYS AS (
+    full_name || ' ' || COALESCE(email, '') || ' ' || COALESCE(city, '')
+  ) STORED;
+
+CREATE INDEX customers_search_gen_idx ON customers USING GIN (search_text gin_trgm_ops);
+
+SELECT * FROM customers WHERE search_text % 'jonson berlin';
+```
+
+## Word similarity for substring matches
+
+Plain `similarity()` penalises length differences: searching "john" against "Johnathan Smith-Wellington" scores low simply because the haystack is long. `word_similarity()` compares against the best-matching word instead:
+
+```sql
+SELECT similarity('john', 'Johnathan Smith-Wellington')       AS plain,       -- low
+       word_similarity('john', 'Johnathan Smith-Wellington')  AS word_based;  -- much higher
+```
+
+The corresponding operators are `<%` (word similarity above threshold) and `<<%` (strict word similarity, requiring alignment to word boundaries):
+
+```sql
+SET pg_trgm.word_similarity_threshold = 0.6;
+
+SELECT id, full_name
+FROM customers
+WHERE 'john' <% full_name
+LIMIT 20;
+```
+
+Use word similarity when the search term is a fragment of a longer field — product names, addresses, descriptions.
+
+## pg_trgm and full-text search together
+
+They solve different problems and complement each other well.
+
+**Full-text search** (`tsvector`/`tsquery`) understands language: stemming means "running" matches "run", stop words are removed, and results rank by term frequency. It does not tolerate misspellings.
+
+**pg_trgm** tolerates misspellings and matches substrings but understands nothing about language.
+
+A robust search tries full-text first and falls back to trigrams when it finds nothing:
+
+```sql
+WITH fts AS (
+  SELECT id, full_name, ts_rank(to_tsvector('english', full_name),
+                                plainto_tsquery('english', 'michael johnson')) AS rank
+  FROM customers
+  WHERE to_tsvector('english', full_name) @@ plainto_tsquery('english', 'michael johnson')
+)
+SELECT id, full_name, rank, 'exact' AS match_type
+FROM fts
+UNION ALL
+SELECT id, full_name, similarity(full_name, 'michael johnson'), 'fuzzy'
+FROM customers
+WHERE NOT EXISTS (SELECT 1 FROM fts)
+  AND full_name % 'michael johnson'
+ORDER BY rank DESC
+LIMIT 20;
+```
+
+The fuzzy branch only executes when the exact branch returns nothing, so you pay for the more expensive path only when you need it.
+
+## Performance notes
+
+**Index build time.** GIN trigram indexes on large tables take a while. Build without blocking writes:
+
+```sql
+CREATE INDEX CONCURRENTLY customers_name_trgm_idx
+  ON customers USING GIN (full_name gin_trgm_ops);
+```
+
+**Index size.** Trigram indexes are large — commonly several times the size of the indexed column. Check before committing on a big table:
+
+```sql
+SELECT indexrelname,
+       pg_size_pretty(pg_relation_size(indexrelid)) AS size,
+       idx_scan AS times_used
+FROM pg_stat_user_indexes
+WHERE relname = 'customers'
+ORDER BY pg_relation_size(indexrelid) DESC;
+```
+
+**Write throughput.** GIN indexes slow inserts. The pending-list mechanism buffers updates; if writes are heavy, tune it:
+
+```sql
+ALTER INDEX customers_name_trgm_idx SET (fastupdate = on, gin_pending_list_limit = '8MB');
+```
+
+**Very short search terms** cannot use the index. Enforce a minimum length of three characters in your application rather than letting a two-character query trigger a sequential scan.
+
+**Confirm the index is used.** After creating it, run `EXPLAIN ANALYZE` on a representative query. If you see a `Seq Scan`, the usual causes are a term shorter than three characters, a mismatch between the query expression and the indexed expression, or missing statistics — run `ANALYZE`.
+
+## Summary
+
+`pg_trgm` gives PostgreSQL typo-tolerant search with no external search engine. Use `%` with a GIN index for threshold matching, `<->` with a GiST index for ranked nearest neighbours, and `word_similarity` when the search term is a fragment of a longer field.
+
+The most underrated benefit is making `LIKE '%term%'` index-assisted — that alone often justifies the extension on any table backing a search box. Verify with `EXPLAIN ANALYZE`, and watch index size on large tables. A client that shows query plans next to results makes this iteration faster; [Chat2DB](https://chat2db.ai/download) does that, and runs in the browser at [app.chat2db.ai](https://app.chat2db.ai).

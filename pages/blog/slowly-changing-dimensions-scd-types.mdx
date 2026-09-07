@@ -1,0 +1,349 @@
+---
+title: "Slowly Changing Dimensions: SCD Types 0-6 Explained"
+description: "SCD Type 1, 2, 3, 4 and 6 compared with working SQL. Track dimension history, avoid duplicate current rows, and pick the right type per attribute."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 7, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# Slowly Changing Dimensions: SCD Types 0-6 Explained
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 7, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+A customer moves from Berlin to Munich. Should last year's sales report now show those sales under Munich, or keep them under Berlin? Both answers are defensible, and the technique for choosing between them is the **slowly changing dimension** — SCD for short.
+
+This guide covers each SCD type with working SQL, and the failure modes that make Type 2 harder than it looks.
+
+## Type 0: Retain original
+
+The attribute never changes after the row is first written. Original credit score at signup, the date an account was opened, the acquisition channel — these are historical facts, not current state.
+
+```sql
+CREATE TABLE dim_customer (
+  customer_key      int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  customer_id       int NOT NULL UNIQUE,
+  signup_date       date NOT NULL,        -- Type 0
+  acquisition_channel text NOT NULL,      -- Type 0
+  current_city      text                  -- Type 1
+);
+```
+
+Enforce it in the load rather than trusting convention. `ON CONFLICT DO UPDATE` that simply omits the Type 0 columns is the cleanest expression:
+
+```sql
+INSERT INTO dim_customer (customer_id, signup_date, acquisition_channel, current_city)
+SELECT id, signup_at::date, channel, city
+FROM stg_customer
+ON CONFLICT (customer_id) DO UPDATE
+SET current_city = EXCLUDED.current_city;   -- Type 0 columns deliberately absent
+```
+
+## Type 1: Overwrite
+
+The new value replaces the old and no history is kept. This is correct when the old value is simply wrong — a typo in a name, a mis-keyed email — or when nobody will ever ask what it used to be.
+
+```sql
+UPDATE dim_product p
+SET product_name = s.product_name,
+    brand        = s.brand,
+    updated_at   = now()
+FROM stg_product s
+WHERE p.product_id = s.product_id
+  AND (p.product_name IS DISTINCT FROM s.product_name
+    OR p.brand        IS DISTINCT FROM s.brand);
+```
+
+Note `IS DISTINCT FROM` rather than `<>`. Plain `<>` returns NULL when either side is NULL, so a value changing from NULL to 'Acme' — or from 'Acme' to NULL — would never be detected. This single operator accounts for a large share of "our dimension stopped updating" bugs.
+
+The cost of Type 1 is that historical reports change retroactively. Rerun last quarter's revenue-by-brand report after a brand rename and the numbers move. Sometimes that is exactly what you want; sometimes it is an audit finding.
+
+## Type 2: Add a new row
+
+Type 2 is the workhorse. Each change closes the current row and inserts a new version, so every fact stays attached to the attribute values that were true when it happened.
+
+```sql
+CREATE TABLE dim_customer (
+  customer_key int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  customer_id  int  NOT NULL,          -- business key, NOT unique
+  full_name    text,
+  city         text,
+  country      text,
+  segment      text,
+  row_hash     text NOT NULL,
+  valid_from   timestamptz NOT NULL,
+  valid_to     timestamptz NOT NULL,
+  is_current   boolean NOT NULL
+);
+
+-- Exactly one current row per business key
+CREATE UNIQUE INDEX dim_customer_current_uq
+  ON dim_customer (customer_id) WHERE is_current;
+
+CREATE INDEX dim_customer_lookup_idx
+  ON dim_customer (customer_id, valid_from DESC);
+```
+
+That partial unique index is the most valuable line in the whole design. Duplicate current rows are the classic Type 2 failure — they double every joined fact — and the index turns a silent data corruption into a loud constraint violation at load time.
+
+### The load
+
+Compute a hash over the tracked attributes so change detection is one comparison regardless of column count:
+
+```sql
+CREATE OR REPLACE FUNCTION customer_hash(
+  full_name text, city text, country text, segment text
+) RETURNS text LANGUAGE sql IMMUTABLE AS $$
+  SELECT md5(
+    COALESCE(full_name, '') || '|' ||
+    COALESCE(city,      '') || '|' ||
+    COALESCE(country,   '') || '|' ||
+    COALESCE(segment,   '')
+  );
+$$;
+```
+
+The `COALESCE(..., '')` matters: `'a' || NULL` is NULL in SQL, so without it any NULL attribute would make the entire hash NULL and every row would look changed.
+
+Then load in two steps, inside one transaction:
+
+```sql
+BEGIN;
+
+-- Step 1: close out rows whose tracked attributes changed
+UPDATE dim_customer d
+SET valid_to   = now(),
+    is_current = false
+FROM stg_customer s
+WHERE d.customer_id = s.customer_id
+  AND d.is_current
+  AND d.row_hash <> customer_hash(s.full_name, s.city, s.country, s.segment);
+
+-- Step 2: insert new versions for changed keys, plus brand-new keys
+INSERT INTO dim_customer (
+  customer_id, full_name, city, country, segment,
+  row_hash, valid_from, valid_to, is_current
+)
+SELECT s.customer_id, s.full_name, s.city, s.country, s.segment,
+       customer_hash(s.full_name, s.city, s.country, s.segment),
+       now(),
+       TIMESTAMPTZ '9999-12-31',
+       true
+FROM stg_customer s
+LEFT JOIN dim_customer d
+  ON d.customer_id = s.customer_id AND d.is_current
+WHERE d.customer_id IS NULL;
+
+COMMIT;
+```
+
+Step 2 handles both cases at once. A changed key had its current row closed in Step 1, so the `LEFT JOIN` on `is_current` finds nothing and the new version is inserted. A brand-new key never had a current row, so it is inserted too. This is why the two steps must share a transaction — if Step 1 commits and Step 2 fails, those customers have no current row at all.
+
+### Why a single MERGE is not enough
+
+Teams frequently try to collapse this into one `MERGE`, and it does not work:
+
+```sql
+-- Incomplete: closes the old version but never inserts the new one
+MERGE INTO dim_customer d
+USING stg_customer s ON d.customer_id = s.customer_id AND d.is_current
+WHEN MATCHED AND d.row_hash <> customer_hash(s.full_name, s.city, s.country, s.segment)
+  THEN UPDATE SET valid_to = now(), is_current = false
+WHEN NOT MATCHED
+  THEN INSERT (...) VALUES (...);
+```
+
+`MERGE` performs at most one action per matched target row. A changed customer matches, so it takes the `UPDATE` branch — and the `INSERT` branch never fires for that source row. You end up with closed rows and no replacement. Either follow the `MERGE` with the Step 2 `INSERT`, or use the two-step form throughout. The [SCD Type 2 SQL generator](https://chat2db.ai/tools/scd-type-2-sql-generator) emits both forms with this caveat inline.
+
+### Using `9999-12-31` instead of NULL
+
+An open-ended `valid_to` is often modelled as NULL. Using a high date instead means range predicates stay simple:
+
+```sql
+-- With a high date: one clean predicate
+SELECT * FROM dim_customer
+WHERE customer_id = 42
+  AND TIMESTAMPTZ '2026-03-15' >= valid_from
+  AND TIMESTAMPTZ '2026-03-15' <  valid_to;
+
+-- With NULL: every query needs the OR
+WHERE valid_from <= ts AND (valid_to > ts OR valid_to IS NULL)
+```
+
+Forgetting that `OR` is a common source of missing rows, and NULL also prevents a clean exclusion constraint over the range.
+
+### Querying a Type 2 dimension
+
+Current state only:
+
+```sql
+SELECT customer_id, full_name, city, segment
+FROM dim_customer
+WHERE is_current;
+```
+
+Point-in-time — what the dimension looked like on a given date:
+
+```sql
+SELECT c.segment, SUM(f.gross_amount) AS revenue
+FROM fact_sales f
+JOIN dim_date     d ON d.date_key = f.date_key
+JOIN dim_customer c ON c.customer_key = f.customer_key
+WHERE d.year = 2026
+GROUP BY c.segment;
+```
+
+Because the fact stores the surrogate key of the version that was current at load time, this query is automatically point-in-time correct — no date-range predicate needed. That is the entire reason facts join on surrogate keys rather than business keys.
+
+Full history for one customer:
+
+```sql
+SELECT customer_key, city, segment, valid_from, valid_to, is_current
+FROM dim_customer
+WHERE customer_id = 42
+ORDER BY valid_from;
+```
+
+## Type 3: Add a new column
+
+Type 3 keeps one prior value in a dedicated column. It suits a single planned reorganisation — a sales territory realignment where reports must show both the old and new grouping side by side for a transition period.
+
+```sql
+ALTER TABLE dim_customer
+  ADD COLUMN previous_segment      text,
+  ADD COLUMN segment_changed_date  date;
+
+UPDATE dim_customer d
+SET previous_segment     = d.segment,
+    segment              = s.segment,
+    segment_changed_date = CURRENT_DATE
+FROM stg_customer s
+WHERE d.customer_id = s.customer_id
+  AND d.segment IS DISTINCT FROM s.segment;
+```
+
+The limitation is inherent: you get exactly one level of history. A second change overwrites the first prior value. Do not reach for Type 3 when the attribute changes repeatedly.
+
+## Type 4: History table
+
+Type 4 splits the dimension in two — a narrow current table for fast joins, and a separate history table holding every version.
+
+```sql
+CREATE TABLE dim_customer_current (
+  customer_key int PRIMARY KEY,
+  customer_id  int NOT NULL UNIQUE,
+  full_name    text,
+  city         text,
+  segment      text
+);
+
+CREATE TABLE dim_customer_history (
+  history_key  bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  customer_id  int NOT NULL,
+  full_name    text,
+  city         text,
+  segment      text,
+  valid_from   timestamptz NOT NULL,
+  valid_to     timestamptz NOT NULL
+);
+```
+
+This helps when the dimension is large and rapidly changing: most queries hit only the small current table, and the history table can live on cheaper storage or be partitioned by year. The trade-off is two tables to keep consistent, and point-in-time queries become explicit range joins.
+
+A related pattern is the **mini-dimension**: move the fast-changing attributes (age band, income band, activity tier) into their own small dimension referenced directly from the fact. This keeps the main dimension from exploding when a handful of volatile columns change constantly.
+
+## Type 6: Combining 1, 2 and 3
+
+Type 6 (named because 1 + 2 + 3 = 6) puts both historical and current values on every Type 2 row. It answers "sales by the segment at the time" and "sales by the customer's segment today" from the same table without a self-join.
+
+```sql
+CREATE TABLE dim_customer (
+  customer_key    int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  customer_id     int NOT NULL,
+  segment         text,          -- Type 2: value at the time
+  current_segment text,          -- Type 1: today's value, on every row
+  valid_from      timestamptz NOT NULL,
+  valid_to        timestamptz NOT NULL,
+  is_current      boolean NOT NULL
+);
+```
+
+The Type 1 column must be updated across **all** versions of the business key whenever it changes:
+
+```sql
+UPDATE dim_customer d
+SET current_segment = s.segment
+FROM stg_customer s
+WHERE d.customer_id = s.customer_id
+  AND d.current_segment IS DISTINCT FROM s.segment;   -- every row, not just the current one
+```
+
+Now one query can slice both ways:
+
+```sql
+SELECT c.segment         AS segment_at_time,
+       c.current_segment AS segment_today,
+       SUM(f.gross_amount) AS revenue
+FROM fact_sales f
+JOIN dim_customer c ON c.customer_key = f.customer_key
+GROUP BY c.segment, c.current_segment;
+```
+
+## Choosing a type
+
+| Type | History kept | Storage cost | Use when |
+| --- | --- | --- | --- |
+| 0 | Original only | None | Value is historically fixed |
+| 1 | None | None | Correcting errors; history irrelevant |
+| 2 | Full | Grows per change | Reporting must be point-in-time correct |
+| 3 | One prior value | One column | A single planned reorganisation |
+| 4 | Full, split out | Two tables | Large, fast-changing dimension |
+| 6 | Full + current | Type 2 + columns | Need both "as was" and "as is" |
+
+The decision is **per attribute**, not per table. A realistic customer dimension mixes them: `signup_date` is Type 0, `email` is Type 1 (corrections shouldn't spawn versions), `city` and `segment` are Type 2.
+
+Be conservative about what goes in the Type 2 tracked list. Every tracked column multiplies row growth — a column that changes daily on a million-row dimension adds a million rows a day, and the dimension stops being small.
+
+## Data quality checks
+
+Run these after every load. Duplicate current rows, the failure that quietly doubles your facts:
+
+```sql
+SELECT customer_id, COUNT(*)
+FROM dim_customer
+WHERE is_current
+GROUP BY customer_id
+HAVING COUNT(*) > 1;
+```
+
+Overlapping validity ranges, which break point-in-time lookups:
+
+```sql
+SELECT a.customer_id, a.customer_key, b.customer_key
+FROM dim_customer a
+JOIN dim_customer b
+  ON a.customer_id = b.customer_id
+ AND a.customer_key < b.customer_key
+ AND a.valid_from < b.valid_to
+ AND b.valid_from < a.valid_to;
+```
+
+Business keys with no current row at all — the signature of a load that failed between Step 1 and Step 2:
+
+```sql
+SELECT DISTINCT customer_id
+FROM dim_customer
+EXCEPT
+SELECT customer_id FROM dim_customer WHERE is_current;
+```
+
+All three should return zero rows. Wire them into your pipeline as assertions rather than running them manually. Inspecting the results is quicker in a client that shows several result sets side by side — [Chat2DB](https://chat2db.ai/download) works well for this, and there is a web version at [app.chat2db.ai](https://app.chat2db.ai).
+
+## Summary
+
+Type 1 overwrites, Type 2 versions, Type 3 keeps one prior value, Type 4 splits history into its own table, and Type 6 gives you both perspectives at once. Type 2 is the default for anything that drives reporting.
+
+The details that determine whether Type 2 works are small and unforgiving: use `IS DISTINCT FROM` for NULL-safe comparison, `COALESCE` inside the hash, a partial unique index on `is_current`, both load steps in one transaction, and a deduplicated staging table. Get those right and the rest is mechanical.

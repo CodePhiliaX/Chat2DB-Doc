@@ -1,0 +1,268 @@
+---
+title: "Nested Loop vs Hash vs Merge Join: How SQL Joins Run"
+description: "Understand the three SQL join algorithms: nested loop, hash and merge join. Learn to read them in EXPLAIN and why the planner picks the wrong one."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 7, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# Nested Loop vs Hash vs Merge Join: How SQL Joins Run
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 7, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+`INNER JOIN` and `LEFT JOIN` describe *which rows* you want. They say nothing about *how* the database finds them. That decision belongs to the planner, which picks between three physical algorithms — nested loop, hash join and merge join.
+
+Knowing which one you got, and why, is the difference between a query that runs in 20 milliseconds and the same query running for 20 minutes.
+
+## Nested loop join
+
+The simplest algorithm: for every row in the outer table, scan the inner table for matches.
+
+```
+for each row R in outer:
+    for each row S in inner where S.key = R.key:
+        emit (R, S)
+```
+
+Naively this is O(n × m). What makes it viable is an index on the inner side's join key — the inner "scan" becomes an index lookup, and the cost drops to roughly O(n × log m).
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT o.order_id, c.full_name
+FROM orders o
+JOIN customers c ON c.id = o.customer_id
+WHERE o.order_id = 12345;
+```
+
+```
+Nested Loop  (cost=0.71..16.75 rows=1 width=36) (actual time=0.031..0.033 rows=1 loops=1)
+  ->  Index Scan using orders_pkey on orders o  (actual time=0.018..0.019 rows=1 loops=1)
+        Index Cond: (order_id = 12345)
+  ->  Index Scan using customers_pkey on customers c  (actual time=0.008..0.009 rows=1 loops=1)
+        Index Cond: (id = o.customer_id)
+```
+
+**Nested loop wins when the outer side is small.** Here the outer produces exactly one row, so the inner index is probed once. This is the right plan for lookups, OLTP queries and anything with a highly selective filter.
+
+**Nested loop is catastrophic when the outer side is large and the inner has no usable index.** A million outer rows against an unindexed inner table means a million sequential scans. This is the single most common cause of a query that "worked fine in staging" and then hangs in production — the planner underestimated the outer row count.
+
+The `loops=` field in `EXPLAIN ANALYZE` is what to watch. Note that reported times are **per loop**, so total inner cost is `actual time × loops`. A node showing `actual time=0.5..0.6 rows=1 loops=800000` spent roughly 480 seconds, not 0.6 milliseconds.
+
+## Hash join
+
+Build a hash table from the smaller input, then probe it with the larger one.
+
+```
+build phase:  load smaller input into a hash table keyed on the join column
+probe phase:  for each row of the larger input, look up its key in the hash table
+```
+
+Each side is read exactly once, giving O(n + m).
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT c.segment, COUNT(*), SUM(o.amount)
+FROM orders o
+JOIN customers c ON c.id = o.customer_id
+WHERE o.order_ts >= DATE '2026-01-01'
+GROUP BY c.segment;
+```
+
+```
+HashAggregate  (actual time=1243.5..1243.6 rows=4 loops=1)
+  ->  Hash Join  (actual time=48.2..1102.3 rows=2841923 loops=1)
+        Hash Cond: (o.customer_id = c.id)
+        ->  Seq Scan on orders o  (actual time=0.02..421.8 rows=2841923 loops=1)
+              Filter: (order_ts >= '2026-01-01')
+        ->  Hash  (actual time=47.9..47.9 rows=180000 loops=1)
+              Buckets: 262144  Batches: 1  Memory Usage: 12484kB
+              ->  Seq Scan on customers c  (actual time=0.01..18.4 rows=180000 loops=1)
+```
+
+**Hash join wins for large joins on equality conditions** — the standard analytical join. It needs no index at all, which is often surprising: adding an index to "fix" a slow hash join frequently changes nothing, because the hash join was already the right choice.
+
+**Its weakness is memory.** The hash table must fit in `work_mem`. When it does not, PostgreSQL spills to disk in multiple batches:
+
+```
+->  Hash  (actual time=52.1..52.1 rows=2000000 loops=1)
+      Buckets: 65536  Batches: 16  Memory Usage: 3892kB
+```
+
+`Batches: 16` means the join spilled to disk 16 times over. That is a strong signal to raise `work_mem`:
+
+```sql
+-- Session-level, for one heavy query
+SET work_mem = '256MB';
+```
+
+`work_mem` is allocated **per sort or hash node per query**, not per query overall. A plan with four hash joins running across ten connections can allocate forty times the setting. Raise it for the specific session or role that needs it rather than globally.
+
+**Hash join only handles equality.** A join on `a.x > b.y` cannot be hashed.
+
+## Merge join
+
+Sort both inputs by the join key, then walk them together like a zip merge.
+
+```
+sort both inputs on the join key
+advance two cursors in lockstep, emitting matches
+```
+
+Cost is dominated by the sorts: O(n log n + m log m), or O(n + m) when both inputs already arrive sorted — which is the case when reading in index order.
+
+```sql
+EXPLAIN (ANALYZE)
+SELECT o.order_id, i.sku
+FROM orders o
+JOIN order_items i ON i.order_id = o.order_id
+ORDER BY o.order_id;
+```
+
+```
+Merge Join  (actual time=0.04..892.1 rows=8500000 loops=1)
+  Merge Cond: (o.order_id = i.order_id)
+  ->  Index Scan using orders_pkey on orders o  (actual time=0.02..201.3 rows=2841923)
+  ->  Index Scan using order_items_order_id_idx on order_items i  (actual time=0.01..312.7 rows=8500000)
+```
+
+Neither side needed an explicit sort — both index scans return rows already ordered by the join key. That is merge join at its best.
+
+**Merge join wins** when both inputs are already sorted, when the join produces very large results, and when the query has an `ORDER BY` on the join key that the merge satisfies for free.
+
+**It loses** when an explicit sort is required on large unsorted inputs, since sorting is more expensive than hashing.
+
+Unlike hash join, merge join supports inequality range conditions, which makes it the algorithm behind efficient range joins.
+
+## Quick comparison
+
+| | Nested loop | Hash join | Merge join |
+| --- | --- | --- | --- |
+| Complexity | O(n × m), O(n log m) with index | O(n + m) | O(n log n + m log m) |
+| Needs index | Strongly benefits | No | Benefits (avoids sort) |
+| Memory | Minimal | Hash table in `work_mem` | Sort space in `work_mem` |
+| Equality only | No | Yes | No |
+| Best for | Small outer, indexed inner | Large equality joins | Pre-sorted inputs, large output |
+| Worst case | Large outer, no index | Hash spills to disk | Sorting large inputs |
+
+## Why the planner chooses wrongly
+
+The planner picks based on estimated row counts. When estimates are wrong, the choice is wrong. Almost every mis-planned join traces back to one of these.
+
+### Stale statistics
+
+The planner uses table statistics to estimate selectivity. After a bulk load these are out of date:
+
+```sql
+ANALYZE orders;
+ANALYZE customers;
+```
+
+Check when statistics were last refreshed:
+
+```sql
+SELECT relname, last_analyze, last_autoanalyze, n_live_tup, n_mod_since_analyze
+FROM pg_stat_user_tables
+WHERE relname IN ('orders', 'customers');
+```
+
+A large `n_mod_since_analyze` relative to `n_live_tup` means the planner is working from a stale picture.
+
+### Correlated columns
+
+The planner assumes columns are independent. When they are not, estimates collapse:
+
+```sql
+-- city and country are strongly correlated; the planner multiplies their
+-- selectivities and estimates far too few rows
+SELECT * FROM customers WHERE city = 'Berlin' AND country = 'Germany';
+```
+
+Extended statistics fix this:
+
+```sql
+CREATE STATISTICS customers_city_country (dependencies, ndistinct)
+  ON city, country FROM customers;
+
+ANALYZE customers;
+```
+
+### Insufficient histogram resolution
+
+For skewed columns, increase the sample size:
+
+```sql
+ALTER TABLE orders ALTER COLUMN customer_id SET STATISTICS 1000;
+ANALYZE orders;
+```
+
+The default is 100 buckets. Raising it costs more `ANALYZE` time but gives much better estimates on skewed distributions.
+
+### Spotting it in EXPLAIN
+
+Always compare estimated against actual:
+
+```
+->  Seq Scan on orders  (cost=0.00..12.5 rows=1 width=8) (actual rows=2841923 loops=1)
+```
+
+Estimated 1 row, got 2.8 million. A nested loop chosen on the assumption of one outer row now runs 2.8 million times. Any order-of-magnitude gap between `rows=` in the cost section and `actual rows=` is the thing to fix — and fixing the estimate is far better than forcing a plan.
+
+## Forcing a plan (for diagnosis)
+
+PostgreSQL has no query hints, but planner methods can be disabled to test a hypothesis:
+
+```sql
+SET enable_nestloop = off;
+EXPLAIN ANALYZE SELECT ...;   -- is the hash join actually faster?
+RESET enable_nestloop;
+```
+
+Use these for diagnosis only. If disabling nested loops makes a query fast, the real fix is better statistics or an index — not shipping the toggle to production, where it would distort every other query in the session.
+
+## Practical guidance
+
+**Index the foreign key side of your joins.** `orders.customer_id` needs an index, not just `customers.id`. PostgreSQL does not create indexes on foreign keys automatically, and this omission is behind a large share of slow joins.
+
+```sql
+SELECT c.conrelid::regclass AS table_name, a.attname AS column_name
+FROM pg_constraint c
+JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)
+WHERE c.contype = 'f'
+  AND NOT EXISTS (
+    SELECT 1 FROM pg_index i
+    WHERE i.indrelid = c.conrelid AND a.attnum = i.indkey[0]
+  );
+```
+
+That query lists foreign keys with no supporting index — usually a productive list to work through.
+
+**Filter before joining.** Reducing the outer input helps every algorithm, and it changes which one the planner picks.
+
+**Watch for row multiplication.** A join against a non-unique key repeats rows, inflating both cost and any `SUM()` downstream. If you need one row per entity, aggregate the many-side in a CTE first. Our [SQL join visualizer](https://chat2db.ai/tools/sql-join-visualizer) demonstrates this on sample rows.
+
+**Do not join what you can filter.** `EXISTS` often beats a join plus `DISTINCT`, because it can stop at the first match:
+
+```sql
+-- Semi-join: stops at the first match per outer row
+SELECT c.* FROM customers c
+WHERE EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = c.id);
+
+-- Slower: produces every match, then deduplicates
+SELECT DISTINCT c.* FROM customers c JOIN orders o ON o.customer_id = c.id;
+```
+
+**Match `work_mem` to the workload.** Analytical queries doing large hash joins need far more than the 4 MB default. Set it per-role rather than globally:
+
+```sql
+ALTER ROLE analytics_user SET work_mem = '256MB';
+```
+
+## Summary
+
+Nested loop suits a small outer input with an indexed inner side. Hash join is the workhorse for large equality joins and needs no index but does need memory. Merge join excels when inputs arrive pre-sorted, typically from index scans.
+
+When a join is slow, read `EXPLAIN ANALYZE` and compare estimated rows to actual rows first. A large discrepancy means the planner chose the algorithm on bad information, and the fix is usually `ANALYZE`, extended statistics, or a missing foreign key index — not rewriting the SQL. A client that displays plans alongside results speeds this loop up considerably; [Chat2DB](https://chat2db.ai/download) does that and can explain plans in plain language, with a browser version at [app.chat2db.ai](https://app.chat2db.ai).

@@ -1,0 +1,283 @@
+---
+title: "Run PostGIS in Docker: A Complete Setup Guide"
+description: "Set up PostGIS with Docker Compose: persistent volumes, extension initialisation, health checks, loading shapefiles with ogr2ogr, and backups."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 7, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# Run PostGIS in Docker: A Complete Setup Guide
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 7, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+Installing PostGIS natively means matching the extension build to your PostgreSQL version, plus GEOS, PROJ and GDAL dependencies. Docker skips all of that — the official `postgis/postgis` image ships PostgreSQL with PostGIS already compiled and configured.
+
+This guide covers a setup you can actually run in development and adapt for production: persistent storage, automatic extension creation, health checks, and spatial data loading.
+
+## The quickest possible start
+
+```bash
+docker run --name postgis \
+  -e POSTGRES_PASSWORD=secret \
+  -e POSTGRES_DB=gis \
+  -p 5432:5432 \
+  -d postgis/postgis:16-3.4
+```
+
+The tag encodes both versions: `16-3.4` is PostgreSQL 16 with PostGIS 3.4. Always pin both — `latest` will move under you and a PostgreSQL major version change requires a data migration.
+
+Verify:
+
+```bash
+docker exec -it postgis psql -U postgres -d gis -c "SELECT postgis_full_version();"
+```
+
+This container has no persistent storage. Remove it and the data is gone.
+
+## Docker Compose with persistence
+
+For anything you intend to keep, use Compose:
+
+```yaml
+services:
+  postgis:
+    image: postgis/postgis:16-3.4
+    container_name: postgis
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: gisuser
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: gis
+      # Enables data checksums on first initialisation only
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgis_data:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+      - ./data:/import:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gisuser -d gis"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    shm_size: 256mb
+
+volumes:
+  postgis_data:
+```
+
+Several details here are deliberate.
+
+**`127.0.0.1:5432:5432`** binds to localhost only. Plain `5432:5432` exposes the database to your entire network, and on a cloud VM that often means the public internet — Docker's port publishing bypasses host firewall rules like UFW.
+
+**`${POSTGRES_PASSWORD:?...}`** fails fast with a clear message if the variable is unset, instead of starting with a blank password.
+
+**`shm_size: 256mb`** raises shared memory above Docker's 64 MB default. PostgreSQL uses `/dev/shm` for parallel query workers, and spatial queries parallelize readily; the default causes "could not resize shared memory segment" errors under load.
+
+**`start_period: 30s`** gives first-time initialisation room to finish before health checks start counting failures.
+
+Named volumes are preferable to bind mounts for the data directory — they avoid the file ownership and permission mismatches that bind mounts cause on macOS and Windows.
+
+## Initialising extensions automatically
+
+Scripts in `/docker-entrypoint-initdb.d` run once, on first initialisation of an empty data directory. Create `initdb/01-extensions.sql`:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS postgis;
+CREATE EXTENSION IF NOT EXISTS postgis_topology;
+CREATE EXTENSION IF NOT EXISTS fuzzystrmatch;
+CREATE EXTENSION IF NOT EXISTS postgis_tiger_geocoder;
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+
+-- Keep spatial reference lookups fast
+ANALYZE spatial_ref_sys;
+```
+
+And `initdb/02-schema.sql` for your tables:
+
+```sql
+CREATE SCHEMA IF NOT EXISTS gis;
+
+CREATE TABLE gis.places (
+  id       bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  name     text NOT NULL,
+  category text,
+  location geography(Point, 4326) NOT NULL
+);
+
+CREATE INDEX places_location_idx ON gis.places USING GIST (location);
+CREATE INDEX places_category_idx ON gis.places (category);
+```
+
+Files run in filename order, so the numeric prefixes matter. **These scripts do not re-run** if the volume already contains a database — if you edit them, you must remove the volume:
+
+```bash
+docker compose down -v    # -v deletes the volume and all data
+docker compose up -d
+```
+
+Forgetting `-v` and wondering why changes had no effect is the most common frustration with this mechanism.
+
+## Tuning PostgreSQL for spatial work
+
+The default configuration is conservative. Spatial queries benefit from more working memory:
+
+```yaml
+    command:
+      - postgres
+      - -c
+      - shared_buffers=1GB
+      - -c
+      - work_mem=64MB
+      - -c
+      - maintenance_work_mem=512MB
+      - -c
+      - effective_cache_size=3GB
+      - -c
+      - max_parallel_workers_per_gather=4
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+```
+
+`work_mem` matters most for spatial work — geometry operations produce large intermediate results, and too little forces sorts and hashes to spill to disk. Note it is allocated per sort node per query, so a complex query with several concurrent connections can use many multiples of the setting. `random_page_cost=1.1` reflects SSD storage, where random reads are nearly as cheap as sequential ones.
+
+Size `shared_buffers` at roughly 25% of the memory available to the container, and `effective_cache_size` at 50–75%.
+
+## Loading spatial data
+
+The PostGIS image includes `shp2pgsql` for shapefiles. With `./data` mounted at `/import`:
+
+```bash
+docker exec -i postgis bash -c \
+  "shp2pgsql -I -s 4326 -g location /import/roads.shp gis.roads | psql -U gisuser -d gis"
+```
+
+The flags: `-I` builds a GiST index after loading, `-s 4326` sets the SRID, `-g location` names the geometry column. Add `-d` to drop and recreate the table, or `-a` to append to an existing one.
+
+If the source is in a different projection, transform during load:
+
+```bash
+docker exec -i postgis bash -c \
+  "shp2pgsql -I -s 27700:4326 -g location /import/uk_roads.shp gis.uk_roads | psql -U gisuser -d gis"
+```
+
+For GeoJSON, GeoPackage, KML and most other formats, `ogr2ogr` from GDAL is more flexible. Run it as a separate container on the same network:
+
+```bash
+docker run --rm --network=host \
+  -v "$(pwd)/data:/data" \
+  ghcr.io/osgeo/gdal:alpine-small-latest \
+  ogr2ogr -f PostgreSQL \
+    "PG:host=localhost port=5432 dbname=gis user=gisuser password=$POSTGRES_PASSWORD" \
+    /data/places.geojson \
+    -nln gis.places_import \
+    -t_srs EPSG:4326 \
+    -lco GEOMETRY_NAME=location \
+    -lco SPATIAL_INDEX=GIST \
+    -nlt PROMOTE_TO_MULTI \
+    -overwrite
+```
+
+`-nlt PROMOTE_TO_MULTI` handles the common case of a source mixing `Polygon` and `MultiPolygon` features, which would otherwise fail against a single-type column.
+
+Verify the load and check for invalid geometry immediately:
+
+```sql
+SELECT COUNT(*) AS total,
+       COUNT(*) FILTER (WHERE NOT ST_IsValid(location::geometry)) AS invalid
+FROM gis.places_import;
+```
+
+## Connecting from another container
+
+Do not use `localhost` from inside a container — that refers to the container itself. Use the Compose service name:
+
+```yaml
+  api:
+    image: my-api:latest
+    depends_on:
+      postgis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://gisuser:${POSTGRES_PASSWORD}@postgis:5432/gis
+```
+
+`condition: service_healthy` uses the health check defined earlier so your application waits for PostgreSQL to actually accept connections, not merely for the container to start. Without it, applications routinely crash on first boot because the database is still initialising.
+
+From the host, connect on `localhost:5432` with any PostgreSQL client. [Chat2DB](https://chat2db.ai/download) handles PostGIS types and can generate spatial SQL, which helps when exploring an unfamiliar dataset; it also runs in the browser at [app.chat2db.ai](https://app.chat2db.ai).
+
+## Backups
+
+`pg_dump` in custom format handles spatial data correctly and compresses well:
+
+```bash
+docker exec postgis pg_dump -U gisuser -d gis -Fc -f /tmp/gis.dump
+docker cp postgis:/tmp/gis.dump ./backups/gis-$(date +%F).dump
+```
+
+Restore into a fresh container:
+
+```bash
+docker cp ./backups/gis-2026-09-07.dump postgis:/tmp/restore.dump
+docker exec postgis pg_restore -U gisuser -d gis --clean --if-exists /tmp/restore.dump
+```
+
+Exclude the PostGIS system tables when dumping schema-only, since the extension recreates them:
+
+```bash
+docker exec postgis pg_dump -U gisuser -d gis \
+  --exclude-table=spatial_ref_sys \
+  --exclude-table=topology.* \
+  -Fc -f /tmp/gis-data.dump
+```
+
+Never back up by copying the volume directory while the container runs — that produces an inconsistent snapshot. Either use `pg_dump` or stop the container first.
+
+## Upgrading
+
+A PostgreSQL major version change requires a data migration; you cannot simply change the image tag and restart. The straightforward path is dump and restore:
+
+```bash
+# Dump from the old version
+docker exec postgis-old pg_dump -U gisuser -d gis -Fc -f /tmp/gis.dump
+docker cp postgis-old:/tmp/gis.dump ./gis.dump
+
+# Start the new version with a fresh volume, then restore
+docker cp ./gis.dump postgis-new:/tmp/gis.dump
+docker exec postgis-new pg_restore -U gisuser -d gis /tmp/gis.dump
+```
+
+If PostGIS itself was also upgraded, run its post-upgrade function afterwards:
+
+```sql
+SELECT postgis_extensions_upgrade();
+SELECT postgis_full_version();
+```
+
+Test the restore in a throwaway container before touching anything you care about.
+
+## Troubleshooting
+
+**"extension postgis is not available"** — you are on a plain `postgres` image rather than `postgis/postgis`. Check with `docker inspect postgis --format '{{.Config.Image}}'`.
+
+**Init scripts did not run** — the volume already had data. Only `docker compose down -v` clears it.
+
+**"could not resize shared memory segment"** — raise `shm_size` above the 64 MB default.
+
+**Permission denied on the data directory** — you bind-mounted a host path with wrong ownership. Use a named volume instead.
+
+**Connection refused from another container** — you used `localhost` rather than the service name, or the app started before the health check passed.
+
+## Summary
+
+Use the official `postgis/postgis` image with both versions pinned, a named volume for data, init scripts to create extensions, and a health check other services depend on. Bind the port to `127.0.0.1` so you do not accidentally expose the database, and raise `shm_size` and `work_mem` above the defaults for spatial workloads.
+
+Load data with `shp2pgsql` for shapefiles or `ogr2ogr` for everything else, and validate geometry right after import — invalid polygons cause spatial predicates to return wrong answers rather than failing loudly.

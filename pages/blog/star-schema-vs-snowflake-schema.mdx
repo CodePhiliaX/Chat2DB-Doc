@@ -1,0 +1,270 @@
+---
+title: "Star Schema vs Snowflake Schema: Which to Use in 2026"
+description: "Star schema vs snowflake schema compared with real DDL, query examples and join costs. Learn when normalizing a dimension helps and when it slows you down."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 7, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# Star Schema vs Snowflake Schema: Which to Use in 2026
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 7, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+Every dimensional model starts with the same decision: do you keep each dimension as one wide, denormalized table, or do you normalize it into a small hierarchy of related tables? The first answer is a **star schema**. The second is a **snowflake schema**. The choice affects query length, join count, storage, and how painful your ETL is to maintain.
+
+This guide builds both models from the same source data so you can see exactly what changes.
+
+## The shared starting point
+
+Both schemas share the same fact table. A fact table holds measurements — things you sum, count or average — plus foreign keys to the dimensions that describe them.
+
+```sql
+CREATE TABLE fact_sales (
+  sale_id       bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  date_key      int    NOT NULL,
+  product_key   int    NOT NULL,
+  store_key     int    NOT NULL,
+  customer_key  int    NOT NULL,
+  quantity      int    NOT NULL,
+  unit_price    numeric(12,2) NOT NULL,
+  net_amount    numeric(14,2) NOT NULL
+);
+```
+
+The fact table is identical in both designs. What differs is how `dim_product` and `dim_store` are built.
+
+## The star schema
+
+In a star schema every dimension is a single flat table. All the descriptive attributes — including entire hierarchies like category → subcategory → brand — live as columns in that one table, repeated on every row.
+
+```sql
+CREATE TABLE dim_product (
+  product_key      int PRIMARY KEY,
+  product_id       text NOT NULL,      -- business key
+  product_name     text,
+  brand_name       text,
+  subcategory_name text,
+  category_name    text,
+  department_name  text,
+  unit_cost        numeric(12,2)
+);
+
+CREATE TABLE dim_store (
+  store_key     int PRIMARY KEY,
+  store_id      text NOT NULL,
+  store_name    text,
+  city_name     text,
+  region_name   text,
+  country_name  text,
+  country_code  char(2)
+);
+```
+
+Notice the redundancy: if 400 products belong to the category `Beverages`, the string `Beverages` is stored 400 times. That repetition is the whole point — it buys you single-join queries.
+
+A typical business question, "net revenue by category and region for Q1", looks like this:
+
+```sql
+SELECT p.category_name,
+       s.region_name,
+       SUM(f.net_amount) AS revenue
+FROM fact_sales f
+JOIN dim_product p ON p.product_key = f.product_key
+JOIN dim_store   s ON s.store_key   = f.store_key
+JOIN dim_date    d ON d.date_key    = f.date_key
+WHERE d.quarter = 1 AND d.year = 2026
+GROUP BY p.category_name, s.region_name
+ORDER BY revenue DESC;
+```
+
+Three joins, all of them fact → dimension, all one hop deep. This shape is what makes star schemas fast: the optimizer recognizes it, and every dimension can be filtered independently before touching the fact table.
+
+## The snowflake schema
+
+A snowflake schema normalizes those hierarchies into separate tables. The dimension is no longer one table but a chain.
+
+```sql
+CREATE TABLE dim_department (
+  department_key  int PRIMARY KEY,
+  department_name text NOT NULL
+);
+
+CREATE TABLE dim_category (
+  category_key   int PRIMARY KEY,
+  category_name  text NOT NULL,
+  department_key int NOT NULL REFERENCES dim_department(department_key)
+);
+
+CREATE TABLE dim_subcategory (
+  subcategory_key  int PRIMARY KEY,
+  subcategory_name text NOT NULL,
+  category_key     int NOT NULL REFERENCES dim_category(category_key)
+);
+
+CREATE TABLE dim_brand (
+  brand_key  int PRIMARY KEY,
+  brand_name text NOT NULL
+);
+
+CREATE TABLE dim_product (
+  product_key     int PRIMARY KEY,
+  product_id      text NOT NULL,
+  product_name    text,
+  brand_key       int NOT NULL REFERENCES dim_brand(brand_key),
+  subcategory_key int NOT NULL REFERENCES dim_subcategory(subcategory_key),
+  unit_cost       numeric(12,2)
+);
+```
+
+Now `Beverages` is stored exactly once, in `dim_category`. The diagram of this model has branches radiating out from the centre — hence "snowflake".
+
+The same business question now needs to walk the chain:
+
+```sql
+SELECT c.category_name,
+       r.region_name,
+       SUM(f.net_amount) AS revenue
+FROM fact_sales f
+JOIN dim_product     p  ON p.product_key     = f.product_key
+JOIN dim_subcategory sc ON sc.subcategory_key = p.subcategory_key
+JOIN dim_category    c  ON c.category_key     = sc.category_key
+JOIN dim_store       st ON st.store_key       = f.store_key
+JOIN dim_city        ci ON ci.city_key        = st.city_key
+JOIN dim_region      r  ON r.region_key       = ci.region_key
+JOIN dim_date        d  ON d.date_key         = f.date_key
+WHERE d.quarter = 1 AND d.year = 2026
+GROUP BY c.category_name, r.region_name
+ORDER BY revenue DESC;
+```
+
+Seven joins instead of three, and three of them are multi-hop chains that must be traversed in order. The result is identical. The query is meaningfully harder to write, read and review.
+
+## Side-by-side comparison
+
+| Aspect | Star schema | Snowflake schema |
+| --- | --- | --- |
+| Dimension tables | One flat table per dimension | Hierarchy split across several tables |
+| Joins for a typical query | 1 per dimension | 2–4 per dimension |
+| Redundancy | High (attributes repeated) | Low (each value stored once) |
+| Storage | Larger dimensions | Smaller dimensions |
+| Query readability | Simple, obvious | Verbose, chain-dependent |
+| BI tool support | Excellent, near-universal | Often needs manual modelling |
+| Update anomalies | Rename touches many rows | Rename touches one row |
+| Best fit | Analytics, columnar warehouses | Very large or heavily shared dimensions |
+
+## Does the storage saving actually matter?
+
+Usually not, and this is the point most comparisons miss. Dimensions are small relative to facts — a product dimension with 200,000 rows sits next to a fact table with hundreds of millions. Saving 40% on the smaller side of that ratio is negligible.
+
+Modern columnar warehouses (Snowflake, BigQuery, Redshift, ClickHouse, DuckDB) also make the redundancy far cheaper than it looks. Column stores compress repeated values aggressively with dictionary and run-length encoding, so a `category_name` column with 12 distinct values across 200,000 rows costs close to nothing. The redundancy that normalization exists to eliminate is largely eliminated by the storage engine already.
+
+You can check this on your own tables:
+
+```sql
+-- PostgreSQL: how much space is each dimension really using?
+SELECT relname AS table_name,
+       pg_size_pretty(pg_total_relation_size(c.oid)) AS total_size,
+       n_live_tup AS approx_rows
+FROM pg_class c
+JOIN pg_stat_user_tables t ON t.relid = c.oid
+WHERE relname LIKE 'dim_%' OR relname LIKE 'fact_%'
+ORDER BY pg_total_relation_size(c.oid) DESC;
+```
+
+If the whole dimension layer is under a few percent of the fact table, normalizing it is optimizing the wrong thing.
+
+## When a snowflake schema is genuinely the right call
+
+Normalizing a dimension is worth it in specific circumstances:
+
+**The dimension is enormous.** A customer dimension with 300 million rows and a long address block is no longer small relative to the facts. Splitting the rarely-queried address attributes into their own table is a real saving.
+
+**A hierarchy is shared by several dimensions.** If `dim_product`, `dim_supplier` and `dim_store` all carry the same geography hierarchy, defining it once and referencing it three times avoids three copies drifting apart.
+
+**Attributes change at very different rates.** If `product_name` is stable but `unit_cost` changes weekly, keeping them in one Type 2 dimension creates a new version of every attribute every week. Splitting the volatile attributes out keeps the history table small.
+
+**Governance requires a single source of truth.** In regulated environments, being able to point at one row as the authoritative definition of a category is sometimes a hard requirement.
+
+**The source is genuinely many-to-many.** Some hierarchies are not clean trees — a product belonging to several categories cannot be flattened without either duplicating facts or picking an arbitrary primary category. That needs a bridge table regardless of your schema style.
+
+## The pragmatic default: star, with exceptions
+
+Most teams get the best results from a mostly-star model with a handful of deliberately normalized branches. Flatten by default; normalize only where you can name the specific problem it solves.
+
+If you inherit a snowflake schema and want star-like ergonomics without a migration, put a view in front of it:
+
+```sql
+CREATE VIEW dim_product_flat AS
+SELECT p.product_key,
+       p.product_id,
+       p.product_name,
+       b.brand_name,
+       sc.subcategory_name,
+       c.category_name,
+       dp.department_name,
+       p.unit_cost
+FROM dim_product     p
+JOIN dim_brand       b  ON b.brand_key        = p.brand_key
+JOIN dim_subcategory sc ON sc.subcategory_key = p.subcategory_key
+JOIN dim_category    c  ON c.category_key     = sc.category_key
+JOIN dim_department  dp ON dp.department_key  = c.department_key;
+```
+
+Analysts and BI tools now see one clean dimension while the physical model stays normalized. If the view's join cost shows up in profiling, materialize it:
+
+```sql
+CREATE MATERIALIZED VIEW dim_product_flat_mv AS
+SELECT * FROM dim_product_flat;
+
+CREATE UNIQUE INDEX ON dim_product_flat_mv (product_key);
+
+-- Refresh without blocking readers (requires the unique index above)
+REFRESH MATERIALIZED VIEW CONCURRENTLY dim_product_flat_mv;
+```
+
+This is often the best of both worlds: normalized storage and maintenance, denormalized consumption.
+
+## What about the galaxy schema?
+
+You will also see "galaxy schema" or "fact constellation" mentioned. This is not a third alternative to star and snowflake — it simply describes a warehouse with **multiple fact tables sharing conformed dimensions**. A `fact_sales` and a `fact_inventory` both joining the same `dim_product` and `dim_date` form a galaxy. Each individual fact table is still modelled as a star or a snowflake. Conformed dimensions are what make cross-fact analysis possible, so this is the normal end state of any mature warehouse.
+
+## Common mistakes in both models
+
+**Putting descriptive text in the fact table.** If you find yourself storing `product_name` on `fact_sales`, the dimension is not doing its job. Facts hold keys and measures.
+
+**Using the business key as the join key.** Join facts to dimensions on the surrogate key, not the natural key. Surrogate keys are narrow integers, and they are what makes Type 2 history work — the fact points at the version of the row that was current when the event happened.
+
+**Normalizing to feel rigorous.** Third normal form is a transactional design goal. A warehouse optimizes for read throughput and analyst comprehension, and those goals often pull the other way.
+
+**Forgetting the date dimension.** Both models want a real `dim_date` table with pre-computed quarter, fiscal period, day-of-week and holiday flags. Deriving those with functions on every query prevents partition pruning and blocks index use.
+
+## Inspecting an existing model
+
+Before redesigning anything, map what you actually have. This query lists the foreign key relationships that define your schema's shape:
+
+```sql
+SELECT tc.table_name        AS child_table,
+       kcu.column_name      AS child_column,
+       ccu.table_name       AS parent_table,
+       ccu.column_name      AS parent_column
+FROM information_schema.table_constraints tc
+JOIN information_schema.key_column_usage kcu
+  ON kcu.constraint_name = tc.constraint_name
+JOIN information_schema.constraint_column_usage ccu
+  ON ccu.constraint_name = tc.constraint_name
+WHERE tc.constraint_type = 'FOREIGN KEY'
+  AND (tc.table_name LIKE 'dim_%' OR tc.table_name LIKE 'fact_%')
+ORDER BY child_table, child_column;
+```
+
+Dimensions with foreign keys pointing at other dimensions are your snowflaked branches. If a branch exists for no reason anyone can articulate, that is a candidate for flattening. A client like [Chat2DB](https://chat2db.ai/download) renders these relationships as an ER diagram directly from the live database, which makes the branches obvious at a glance — you can also try it in the browser at [app.chat2db.ai](https://app.chat2db.ai).
+
+## Summary
+
+Start with a star schema. Flat dimensions produce shorter queries, fewer joins, better BI tool compatibility and fewer opportunities for an analyst to get a join condition wrong. The storage redundancy that snowflaking eliminates is mostly compressed away by columnar engines anyway.
+
+Reach for normalization when you can point at a concrete reason: a dimension large enough to matter next to the facts, a hierarchy shared across several dimensions, attributes that change at wildly different rates, or a genuine many-to-many relationship. And when you do normalize, consider exposing a flattened view so the people writing queries never pay for the decision.

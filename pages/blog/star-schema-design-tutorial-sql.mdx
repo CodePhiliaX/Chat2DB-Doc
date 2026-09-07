@@ -1,0 +1,350 @@
+---
+title: "Star Schema Tutorial: Build One in SQL Step by Step"
+description: "A hands-on star schema example in SQL: design the grain, build a date dimension, load facts with surrogate keys, and write the analytical queries."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 7, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# Star Schema Tutorial: Build One in SQL Step by Step
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 7, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+Most star schema explanations stop at the diagram. This tutorial builds a working one in PostgreSQL from a normalized OLTP source, loads it, and runs the queries the model exists to answer. Every statement here runs as written.
+
+## The source system
+
+Assume a typical transactional e-commerce schema:
+
+```sql
+CREATE TABLE customers (
+  id         serial PRIMARY KEY,
+  email      text UNIQUE NOT NULL,
+  full_name  text,
+  city       text,
+  country    text,
+  signup_at  timestamptz NOT NULL
+);
+
+CREATE TABLE products (
+  id       serial PRIMARY KEY,
+  sku      text UNIQUE NOT NULL,
+  name     text,
+  category text,
+  brand    text,
+  cost     numeric(12,2)
+);
+
+CREATE TABLE orders (
+  id          serial PRIMARY KEY,
+  customer_id int NOT NULL REFERENCES customers(id),
+  placed_at   timestamptz NOT NULL,
+  status      text NOT NULL
+);
+
+CREATE TABLE order_items (
+  id         serial PRIMARY KEY,
+  order_id   int NOT NULL REFERENCES orders(id),
+  product_id int NOT NULL REFERENCES products(id),
+  quantity   int NOT NULL,
+  unit_price numeric(12,2) NOT NULL
+);
+```
+
+This design is correct for transactions and awkward for analysis. Answering "revenue by category by month" means joining four tables and deriving the month on the fly.
+
+## Step 1: Declare the grain
+
+The grain is the single most important decision in dimensional modelling, and it must be stated as one sentence before any DDL is written.
+
+> One row in `fact_sales` represents one product line item on one order.
+
+Everything follows from this. The grain tells you which dimensions apply (a line item has a date, a customer, a product), and it tells you which measures are valid at this level (quantity and line amount are; order-level shipping cost is not, because it belongs to a coarser grain).
+
+Getting this wrong is the root of most warehouse problems. If you mix order-level and line-level facts in one table, every sum of the order-level column will be inflated by the number of line items.
+
+## Step 2: Build the date dimension
+
+Every star schema needs a real date dimension. Deriving date parts with functions at query time prevents partition pruning and blocks index usage, and it makes fiscal calendars impossible.
+
+```sql
+CREATE TABLE dim_date (
+  date_key       int  PRIMARY KEY,     -- YYYYMMDD
+  full_date      date NOT NULL UNIQUE,
+  year           int  NOT NULL,
+  quarter        int  NOT NULL,
+  month          int  NOT NULL,
+  month_name     text NOT NULL,
+  day_of_month   int  NOT NULL,
+  day_of_week    int  NOT NULL,
+  day_name       text NOT NULL,
+  is_weekend     boolean NOT NULL,
+  iso_week       int  NOT NULL,
+  fiscal_year    int  NOT NULL,
+  fiscal_quarter int  NOT NULL
+);
+```
+
+Populate it once with a generated series. This fills ten years in a single statement:
+
+```sql
+INSERT INTO dim_date
+SELECT
+  CAST(to_char(d, 'YYYYMMDD') AS int)        AS date_key,
+  d::date                                    AS full_date,
+  EXTRACT(YEAR    FROM d)::int               AS year,
+  EXTRACT(QUARTER FROM d)::int               AS quarter,
+  EXTRACT(MONTH   FROM d)::int               AS month,
+  to_char(d, 'Month')                        AS month_name,
+  EXTRACT(DAY     FROM d)::int               AS day_of_month,
+  EXTRACT(ISODOW  FROM d)::int               AS day_of_week,
+  to_char(d, 'Day')                          AS day_name,
+  EXTRACT(ISODOW  FROM d)::int >= 6          AS is_weekend,
+  EXTRACT(WEEK    FROM d)::int               AS iso_week,
+  -- fiscal year starting in April
+  CASE WHEN EXTRACT(MONTH FROM d) >= 4
+       THEN EXTRACT(YEAR FROM d)::int
+       ELSE EXTRACT(YEAR FROM d)::int - 1 END AS fiscal_year,
+  CASE WHEN EXTRACT(MONTH FROM d) >= 4
+       THEN ((EXTRACT(MONTH FROM d)::int - 4) / 3) + 1
+       ELSE ((EXTRACT(MONTH FROM d)::int + 8) / 3) + 1 END AS fiscal_quarter
+FROM generate_series(DATE '2020-01-01', DATE '2030-12-31', INTERVAL '1 day') AS d;
+```
+
+The integer `date_key` in `YYYYMMDD` form is a deliberate convention: it is compact, human-readable in raw fact rows, and sorts correctly.
+
+## Step 3: Build the remaining dimensions
+
+Dimensions get a surrogate key (a meaningless integer used for joins) and retain the business key from the source.
+
+```sql
+CREATE TABLE dim_customer (
+  customer_key  int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  customer_id   int  NOT NULL,          -- business key from source
+  email         text,
+  full_name     text,
+  city          text,
+  country       text,
+  signup_date   date,
+  UNIQUE (customer_id)
+);
+
+CREATE TABLE dim_product (
+  product_key   int GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  product_id    int  NOT NULL,
+  sku           text,
+  product_name  text,
+  category      text,
+  brand         text,
+  unit_cost     numeric(12,2),
+  UNIQUE (product_id)
+);
+```
+
+Why a surrogate key rather than reusing `products.id`? Three reasons. It insulates the warehouse from source system changes such as a re-keying or a migration. It lets you merge several source systems into one dimension. And critically, it is what makes Type 2 history possible — when a product changes category you insert a new row with a new surrogate key, and old facts keep pointing at the old version.
+
+Load them from the source:
+
+```sql
+INSERT INTO dim_customer (customer_id, email, full_name, city, country, signup_date)
+SELECT id, email, full_name, city, country, signup_at::date
+FROM customers
+ON CONFLICT (customer_id) DO UPDATE
+SET email     = EXCLUDED.email,
+    full_name = EXCLUDED.full_name,
+    city      = EXCLUDED.city,
+    country   = EXCLUDED.country;
+
+INSERT INTO dim_product (product_id, sku, product_name, category, brand, unit_cost)
+SELECT id, sku, name, category, brand, cost
+FROM products
+ON CONFLICT (product_id) DO UPDATE
+SET sku          = EXCLUDED.sku,
+    product_name = EXCLUDED.product_name,
+    category     = EXCLUDED.category,
+    brand        = EXCLUDED.brand,
+    unit_cost    = EXCLUDED.unit_cost;
+```
+
+This is Type 1 behaviour — changes overwrite and no history is kept. That is a conscious choice, appropriate when nobody needs to know what a product's category used to be.
+
+### The unknown member
+
+Add an explicit "unknown" row to every dimension so facts with a missing or invalid key still join:
+
+```sql
+INSERT INTO dim_customer (customer_id, email, full_name, city, country)
+OVERRIDING SYSTEM VALUE
+VALUES (-1, 'unknown', 'Unknown Customer', 'Unknown', 'Unknown')
+ON CONFLICT DO NOTHING;
+```
+
+Without this you are forced into outer joins everywhere, or you silently lose facts. A dedicated unknown member keeps every join an inner join and makes data quality problems visible as a countable bucket rather than as missing rows.
+
+## Step 4: Build and load the fact table
+
+```sql
+CREATE TABLE fact_sales (
+  sale_key      bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  date_key      int NOT NULL REFERENCES dim_date(date_key),
+  customer_key  int NOT NULL REFERENCES dim_customer(customer_key),
+  product_key   int NOT NULL REFERENCES dim_product(product_key),
+  order_id      int NOT NULL,           -- degenerate dimension
+  quantity      int NOT NULL,
+  unit_price    numeric(12,2) NOT NULL,
+  gross_amount  numeric(14,2) NOT NULL,
+  unit_cost     numeric(12,2) NOT NULL,
+  margin_amount numeric(14,2) NOT NULL
+);
+
+CREATE INDEX ON fact_sales (date_key);
+CREATE INDEX ON fact_sales (product_key);
+CREATE INDEX ON fact_sales (customer_key);
+```
+
+`order_id` is a **degenerate dimension** — a business identifier with no attributes of its own. It has no dimension table because there would be nothing to put in it, but you still need it to group line items back into orders.
+
+The load resolves every business key to its surrogate key:
+
+```sql
+INSERT INTO fact_sales (
+  date_key, customer_key, product_key, order_id,
+  quantity, unit_price, gross_amount, unit_cost, margin_amount
+)
+SELECT
+  CAST(to_char(o.placed_at, 'YYYYMMDD') AS int),
+  COALESCE(dc.customer_key, -1),
+  COALESCE(dp.product_key,  -1),
+  o.id,
+  oi.quantity,
+  oi.unit_price,
+  oi.quantity * oi.unit_price,
+  COALESCE(dp.unit_cost, 0),
+  (oi.quantity * oi.unit_price) - (oi.quantity * COALESCE(dp.unit_cost, 0))
+FROM order_items oi
+JOIN orders       o  ON o.id = oi.order_id
+LEFT JOIN dim_customer dc ON dc.customer_id = o.customer_id
+LEFT JOIN dim_product  dp ON dp.product_id  = oi.product_id
+WHERE o.status = 'completed'
+  AND o.placed_at >= DATE '2026-01-01';
+```
+
+Two details matter here. The `LEFT JOIN` plus `COALESCE(..., -1)` routes orphaned keys to the unknown member rather than dropping the row. And `margin_amount` is stored, not derived — precomputing it at load time means every margin query is a plain `SUM()`.
+
+### Additive, semi-additive, non-additive
+
+Store measures that sum cleanly across every dimension. `quantity`, `gross_amount` and `margin_amount` are **additive**. A balance or inventory level is **semi-additive** — it sums across products but not across time, where you want a period-end snapshot instead. A ratio like margin percentage is **non-additive**: never store it, because averaging percentages gives the wrong answer. Store the numerator and denominator and divide at query time.
+
+## Step 5: Query the model
+
+This is the payoff. Revenue and margin by category and month:
+
+```sql
+SELECT d.year,
+       d.month_name,
+       p.category,
+       SUM(f.gross_amount)  AS revenue,
+       SUM(f.margin_amount) AS margin,
+       ROUND(100.0 * SUM(f.margin_amount) / NULLIF(SUM(f.gross_amount), 0), 1) AS margin_pct
+FROM fact_sales f
+JOIN dim_date    d ON d.date_key    = f.date_key
+JOIN dim_product p ON p.product_key = f.product_key
+WHERE d.year = 2026
+GROUP BY d.year, d.month, d.month_name, p.category
+ORDER BY d.month, revenue DESC;
+```
+
+Note `NULLIF(..., 0)` in the denominator — dividing by zero would abort the whole query, and returning NULL for a zero-revenue bucket is the right semantic.
+
+Weekday versus weekend performance, a question the date dimension makes trivial:
+
+```sql
+SELECT p.brand,
+       SUM(f.gross_amount) FILTER (WHERE d.is_weekend)     AS weekend_revenue,
+       SUM(f.gross_amount) FILTER (WHERE NOT d.is_weekend) AS weekday_revenue
+FROM fact_sales f
+JOIN dim_date    d ON d.date_key    = f.date_key
+JOIN dim_product p ON p.product_key = f.product_key
+WHERE d.fiscal_year = 2026
+GROUP BY p.brand
+ORDER BY weekend_revenue DESC NULLS LAST
+LIMIT 20;
+```
+
+Top customers with a running cumulative total:
+
+```sql
+WITH customer_revenue AS (
+  SELECT c.customer_key,
+         c.full_name,
+         c.country,
+         SUM(f.gross_amount) AS revenue
+  FROM fact_sales f
+  JOIN dim_customer c ON c.customer_key = f.customer_key
+  JOIN dim_date     d ON d.date_key     = f.date_key
+  WHERE d.year = 2026
+    AND c.customer_key <> -1
+  GROUP BY c.customer_key, c.full_name, c.country
+)
+SELECT full_name,
+       country,
+       revenue,
+       SUM(revenue) OVER (ORDER BY revenue DESC) AS running_total,
+       ROUND(100.0 * SUM(revenue) OVER (ORDER BY revenue DESC)
+             / SUM(revenue) OVER (), 1) AS cumulative_pct
+FROM customer_revenue
+ORDER BY revenue DESC
+LIMIT 50;
+```
+
+Every one of these is a single-hop join from the fact table. That is the star schema working.
+
+## Step 6: Validate the load
+
+Never trust a warehouse load without checks. Row count against the source:
+
+```sql
+SELECT
+  (SELECT COUNT(*) FROM order_items oi
+     JOIN orders o ON o.id = oi.order_id
+    WHERE o.status = 'completed'
+      AND o.placed_at >= DATE '2026-01-01') AS source_rows,
+  (SELECT COUNT(*) FROM fact_sales)         AS fact_rows;
+```
+
+Revenue totals must reconcile to the penny:
+
+```sql
+SELECT
+  (SELECT SUM(oi.quantity * oi.unit_price)
+     FROM order_items oi
+     JOIN orders o ON o.id = oi.order_id
+    WHERE o.status = 'completed'
+      AND o.placed_at >= DATE '2026-01-01') AS source_revenue,
+  (SELECT SUM(gross_amount) FROM fact_sales) AS fact_revenue;
+```
+
+And check how many facts landed on the unknown member — a rising number here is an early warning that a source key is breaking:
+
+```sql
+SELECT COUNT(*) AS orphaned_customers
+FROM fact_sales WHERE customer_key = -1;
+```
+
+Running these three checks after every load catches the majority of ETL regressions before an analyst finds them.
+
+## Adding history later
+
+When the business asks "what was this customer's segment when they placed that order?", the Type 1 dimension cannot answer. That is the point at which you convert to a Type 2 dimension with `valid_from`, `valid_to` and `is_current` columns, and the fact load starts resolving the surrogate key by date range rather than by business key alone. Our [SCD Type 2 SQL generator](https://chat2db.ai/tools/scd-type-2-sql-generator) writes that DDL and load logic for Postgres, Snowflake and BigQuery.
+
+Design the fact load so this change is possible from day one: because facts store the surrogate key rather than the business key, adding history later does not require rewriting existing fact rows.
+
+## Summary
+
+A star schema is a small number of deliberate decisions. State the grain in one sentence. Give every dimension a surrogate key and an unknown member. Build a real date dimension instead of deriving date parts. Store additive measures, and precompute the derived ones. Then validate row counts, totals and orphan rates on every load.
+
+Exploring the resulting model is much easier with a client that can diagram the foreign keys and run ad-hoc queries side by side — [Chat2DB](https://chat2db.ai/download) does both, and there is a browser version at [app.chat2db.ai](https://app.chat2db.ai).
