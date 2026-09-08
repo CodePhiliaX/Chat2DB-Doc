@@ -1,0 +1,323 @@
+---
+title: "PostgreSQL RLS Performance: Fixing Slow Policies"
+description: "Why Postgres row level security slows queries down and how to fix it: indexing policy columns, initplan caching, avoiding correlated subqueries, reading plans."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 8, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# PostgreSQL RLS Performance: Fixing Slow Policies
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 8, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+Row level security is the cleanest way to enforce tenant isolation in PostgreSQL, and it is also one of the easiest ways to accidentally make every query in your application ten times slower. The mechanism is simple enough — the planner injects your policy expression as an extra predicate — but the consequences depend entirely on what that expression looks like and whether the planner can do anything intelligent with it.
+
+This article covers why RLS costs what it costs, the five patterns that account for nearly all RLS performance problems, and how to read an execution plan to tell which one you are hitting.
+
+## How RLS changes the plan
+
+When a table has policies, PostgreSQL rewrites references to that table into a subquery with the policy predicate attached. Conceptually:
+
+```sql
+-- What you wrote
+SELECT * FROM orders WHERE status = 'shipped';
+
+-- What the planner sees, roughly
+SELECT * FROM (
+  SELECT * FROM orders WHERE <policy expression>
+) orders
+WHERE status = 'shipped';
+```
+
+The important detail is *when* the policy predicate is evaluated relative to your own predicates. PostgreSQL classifies functions by whether they are known safe to run on rows the user should not see. A function that is not marked `LEAKPROOF` cannot be pushed below the policy filter, because a non-leakproof function could reveal the contents of a hidden row through an error message or a side channel.
+
+That restriction is the root of most RLS slowness. Your selective `WHERE` clause gets evaluated *after* the policy predicate rather than being combined with it, so the planner produces a plan that materialises far more rows than it needs to.
+
+## Set up a test table
+
+Everything below is measurable, so build something to measure:
+
+```sql
+CREATE TABLE orders (
+  id          bigserial PRIMARY KEY,
+  tenant_id   uuid NOT NULL,
+  customer_id bigint NOT NULL,
+  status      text NOT NULL,
+  total_cents bigint NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+-- 2 million rows across 500 tenants
+INSERT INTO orders (tenant_id, customer_id, status, total_cents, created_at)
+SELECT
+  ('00000000-0000-0000-0000-' || lpad((g % 500)::text, 12, '0'))::uuid,
+  (random() * 100000)::bigint,
+  (ARRAY['pending','shipped','delivered','cancelled'])[1 + (g % 4)],
+  (random() * 50000)::bigint,
+  now() - (random() * interval '365 days')
+FROM generate_series(1, 2000000) g;
+
+ANALYZE orders;
+
+CREATE ROLE app_user LOGIN;
+GRANT SELECT, INSERT, UPDATE, DELETE ON orders TO app_user;
+GRANT USAGE, SELECT ON SEQUENCE orders_id_seq TO app_user;
+```
+
+## Problem 1: the policy column is not indexed
+
+This is the big one, and it is embarrassing in the way that all big ones are.
+
+```sql
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON orders
+  FOR ALL TO app_user
+  USING (tenant_id = current_setting('app.current_tenant', true)::uuid)
+  WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::uuid);
+```
+
+Now run a query as the application role:
+
+```sql
+SET ROLE app_user;
+SET app.current_tenant = '00000000-0000-0000-0000-000000000042';
+
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT count(*) FROM orders WHERE status = 'shipped';
+```
+
+Without an index on `tenant_id`:
+
+```
+Aggregate  (cost=64350.00..64350.01 rows=1 width=8) (actual time=812.4..812.4 rows=1)
+  ->  Seq Scan on orders  (cost=0.00..64347.50 rows=1000 width=0) (actual time=0.4..812.1 rows=1000)
+        Filter: ((status = 'shipped') AND (tenant_id = (current_setting(...))::uuid))
+        Rows Removed by Filter: 1999000
+        Buffers: shared hit=1204 read=25462
+```
+
+Two million rows scanned to return a thousand. The fix is not subtle:
+
+```sql
+RESET ROLE;
+CREATE INDEX orders_tenant_id_idx ON orders (tenant_id);
+ANALYZE orders;
+```
+
+```
+Aggregate  (cost=3512.44..3512.45 rows=1 width=8) (actual time=4.1..4.1 rows=1)
+  ->  Index Scan using orders_tenant_id_idx on orders  (actual time=0.05..3.9 rows=1000)
+        Index Cond: (tenant_id = (current_setting(...))::uuid)
+        Filter: (status = 'shipped')
+        Rows Removed by Filter: 3000
+        Buffers: shared hit=1109
+```
+
+**Rule: every column referenced by a policy predicate needs an index.** Not "should have" — needs. RLS turns that column into part of every single query against the table, including ones that previously had a perfectly good index of their own.
+
+## Problem 2: your existing indexes no longer match
+
+Adding a single-column index on `tenant_id` fixes the catastrophic case but leaves a subtler one. Your application's real queries filter on tenant *and* something else. A composite index leading with the tenant column serves both the policy and the query in one scan:
+
+```sql
+CREATE INDEX orders_tenant_status_idx ON orders (tenant_id, status);
+CREATE INDEX orders_tenant_created_idx ON orders (tenant_id, created_at DESC);
+```
+
+```
+Aggregate  (actual time=0.6..0.6 rows=1)
+  ->  Index Only Scan using orders_tenant_status_idx on orders (actual time=0.03..0.5 rows=1000)
+        Index Cond: ((tenant_id = (current_setting(...))::uuid) AND (status = 'shipped'))
+        Heap Fetches: 0
+        Buffers: shared hit=9
+```
+
+1109 buffers down to 9. Under RLS, **the policy column belongs at the front of nearly every composite index on the table**. This is a real cost — it widens every index and constrains ordering choices — and it is the price of enforcing isolation in the database. Budget for it when you design the schema rather than discovering it in production.
+
+## Problem 3: the policy expression is re-evaluated per row
+
+`current_setting()` is `STABLE`, so PostgreSQL evaluates it once per statement and folds the result into the index condition. That is why the plans above show a clean `Index Cond`.
+
+Not every helper is so well behaved. A function marked `VOLATILE` — the default if you forget to declare otherwise — must be re-run for every row, and it cannot be used as an index condition at all:
+
+```sql
+-- Bad: VOLATILE by default
+CREATE FUNCTION current_tenant() RETURNS uuid AS $$
+  SELECT current_setting('app.current_tenant', true)::uuid;
+$$ LANGUAGE sql;
+
+CREATE POLICY p ON orders FOR ALL TO app_user
+  USING (tenant_id = current_tenant());
+```
+
+```
+Seq Scan on orders  (actual time=0.5..2140.3 rows=1000)
+  Filter: (tenant_id = current_tenant())
+  Rows Removed by Filter: 1999000
+```
+
+Two seconds, and the index is untouched because the planner cannot prove the function returns the same value across rows. Declare it correctly:
+
+```sql
+CREATE OR REPLACE FUNCTION current_tenant() RETURNS uuid
+  LANGUAGE sql
+  STABLE                    -- same result within one statement
+  PARALLEL SAFE
+AS $$
+  SELECT current_setting('app.current_tenant', true)::uuid;
+$$;
+```
+
+The plan returns to an index scan. **Every helper function used in a policy should be `STABLE` (or `IMMUTABLE` if genuinely constant) and `PARALLEL SAFE`.** A volatile policy helper also disables parallel query on the whole table, which quietly costs you on analytical queries.
+
+There is a second, related trick from the Supabase community that applies to plain Postgres too. Wrapping a stable-but-expensive call in a scalar subquery forces it into an InitPlan, evaluated exactly once:
+
+```sql
+USING (tenant_id = (SELECT current_tenant()))
+```
+
+For `current_setting` the planner usually manages this on its own; for a function that reads a table it makes a large difference.
+
+## Problem 4: correlated subqueries in policies
+
+Membership-style policies are where RLS performance really falls apart:
+
+```sql
+CREATE POLICY member_access ON orders
+  FOR SELECT TO app_user
+  USING (
+    EXISTS (
+      SELECT 1 FROM tenant_members m
+      WHERE m.tenant_id = orders.tenant_id
+        AND m.user_id = current_setting('app.current_user', true)::uuid
+    )
+  );
+```
+
+The subquery references `orders.tenant_id`, so it is correlated: potentially one lookup per candidate row. On two million rows that is fatal, and because the policy predicate is evaluated before your own filters, you cannot escape it by adding a selective `WHERE`.
+
+There are two good rewrites.
+
+**Rewrite as a non-correlated `IN` list** when the set of permitted tenants is small. The planner hoists it into an InitPlan and evaluates it once:
+
+```sql
+CREATE POLICY member_access ON orders
+  FOR SELECT TO app_user
+  USING (
+    tenant_id IN (
+      SELECT m.tenant_id FROM tenant_members m
+      WHERE m.user_id = current_setting('app.current_user', true)::uuid
+    )
+  );
+```
+
+```
+Index Scan using orders_tenant_id_idx on orders (actual time=0.08..4.2 rows=1000)
+  Index Cond: (tenant_id = ANY (hashed InitPlan 1))
+  InitPlan 1
+    ->  Index Scan using tenant_members_user_idx on tenant_members (actual time=0.02..0.02 rows=1)
+```
+
+The membership lookup runs once, the result becomes an array, and the index on `orders.tenant_id` does the rest.
+
+**Push it into a cached `security definer` function** when the membership table is itself under RLS — otherwise the inner query gets filtered by *its* policies, and you can end up with recursive policy evaluation or a permission error:
+
+```sql
+CREATE OR REPLACE FUNCTION allowed_tenants()
+RETURNS uuid[]
+LANGUAGE sql
+STABLE
+PARALLEL SAFE
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+  SELECT coalesce(array_agg(tenant_id), '{}')
+  FROM tenant_members
+  WHERE user_id = current_setting('app.current_user', true)::uuid;
+$$;
+
+CREATE POLICY member_access ON orders
+  FOR SELECT TO app_user
+  USING (tenant_id = ANY ((SELECT allowed_tenants())));
+```
+
+One lookup per statement, an array comparison the index can use, and no recursion.
+
+## Problem 5: non-leakproof functions block predicate pushdown
+
+This is the most obscure of the five and the one that produces the most confusing plans. Consider a policy on a table you query with a `LIKE`:
+
+```sql
+SET ROLE app_user;
+EXPLAIN (ANALYZE)
+SELECT * FROM orders WHERE status LIKE 'ship%';
+```
+
+Operators like `=` on common types are marked `LEAKPROOF` and can be evaluated before the RLS predicate. Many others are not — `LIKE` on `text` is leakproof in modern PostgreSQL, but user-defined functions never are unless you explicitly mark them, and neither are several casts and comparison operators on less common types.
+
+When your filter is non-leakproof, the planner is forced into this order: apply the policy first, then your filter. If your filter was the selective one and the policy is not, you scan far more rows than the plan's row estimates suggest you should.
+
+You can see this directly by comparing a plan run as the table owner (no RLS) against the same plan as `app_user`. If the shape changes and the row counts blow up, non-leakproof predicate ordering is the reason.
+
+The remedies, in order of preference:
+
+1. **Make the policy predicate itself selective and indexed** so that "policy first" is cheap. This is the general answer and it is why problems 1 and 2 matter so much.
+2. **Mark your own helper functions `LEAKPROOF`** — but only if they genuinely cannot leak information about their arguments through errors, timing, or output. This requires superuser and is a security decision, not a performance one. A function that raises an error containing its input is not leakproof, no matter what you label it.
+3. **Restructure the query** so the selective condition is on the policy column itself, letting one index condition satisfy both.
+
+## Measuring it properly
+
+Test RLS performance as the application role, not as the owner or a superuser, because both bypass policies by default. If your application connects as the table owner, force the check so your measurements reflect reality:
+
+```sql
+ALTER TABLE orders FORCE ROW LEVEL SECURITY;
+```
+
+A reliable measurement loop:
+
+```sql
+BEGIN;
+SET LOCAL ROLE app_user;
+SET LOCAL app.current_tenant = '00000000-0000-0000-0000-000000000042';
+
+EXPLAIN (ANALYZE, BUFFERS, VERBOSE)
+SELECT ...;
+
+ROLLBACK;
+```
+
+`SET LOCAL` is important: a bare `SET` leaks into the next transaction on a pooled connection, which will eventually give you a query that mysteriously sees the wrong tenant's data.
+
+What to look for in the output:
+
+- **`Seq Scan` with the policy expression in `Filter`** — you are missing an index on the policy column (problem 1).
+- **A large `Rows Removed by Filter`** relative to returned rows — the policy is being applied after a scan rather than as an index condition.
+- **The policy predicate appearing as `Filter` rather than `Index Cond`** — the expression is not sargable; check for volatility (problem 3) or a cast that defeats the index.
+- **A `SubPlan` rather than an `InitPlan`** next to the policy — a correlated subquery running per row (problem 4).
+- **`Heap Fetches` high on an index-only scan** — worth a `VACUUM`, unrelated to RLS but often surfaced by it.
+
+For finding which queries regressed after you enabled RLS, `pg_stat_statements` is the right instrument: compare `mean_exec_time` and `shared_blks_read` for the same `queryid` before and after. A visual client that keeps plans side by side makes the comparison much faster — [Chat2DB](https://chat2db.ai/download) renders `EXPLAIN ANALYZE` output as a tree with per-node timings and row estimates, so a policy predicate landing in the wrong place is obvious at a glance rather than something you parse out of text. It runs locally or in the browser at [app.chat2db.ai](https://app.chat2db.ai).
+
+## Does RLS have unavoidable overhead?
+
+Some, but less than its reputation suggests. With a well-indexed, sargable policy predicate the marginal cost over hand-written `WHERE tenant_id = ?` clauses is small — you are paying for one extra index condition the query would have carried anyway. Benchmarks on simple point lookups typically show single-digit percentage overhead.
+
+The overhead becomes large only when the policy defeats the planner: unindexed columns, volatile functions, correlated subqueries, or predicates that force a full scan before your own filters run. All four are avoidable, and all four are things you can see in an execution plan.
+
+The trade you are actually making is not performance for safety. It is a small, bounded performance cost plus wider indexes, in exchange for isolation that cannot be forgotten by a new engineer writing a query at 2am. On a multi-tenant system that is close to always worth it — but only if you index for it deliberately.
+
+## Summary checklist
+
+- Index every column referenced by a policy predicate.
+- Lead composite indexes with the policy column.
+- Declare policy helper functions `STABLE` and `PARALLEL SAFE`; never leave them `VOLATILE`.
+- Replace correlated `EXISTS` subqueries with non-correlated `IN` lists or cached `security definer` functions returning an array.
+- Wrap expensive stable calls as `(SELECT fn())` to force an InitPlan.
+- Test with `SET LOCAL ROLE` inside a transaction, never as the owner.
+- Compare plans with and without RLS to spot non-leakproof predicate reordering.
+- Watch `pg_stat_statements` for regressions after enabling policies on a hot table.

@@ -1,0 +1,360 @@
+---
+title: "Supabase Row Level Security: A Policies Tutorial"
+description: "Learn Supabase row level security step by step: enable RLS, write policies with auth.uid(), handle inserts and joins, and debug policies that block rows."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 8, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# Supabase Row Level Security: A Policies Tutorial
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 8, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+Supabase hands your frontend a real PostgreSQL connection through PostgREST. That is the whole appeal — no CRUD backend to write — and it is also the whole risk. The anon key ships to the browser, so anybody who opens DevTools can issue any query the anon role is allowed to issue. The only thing standing between your users' data and the public internet is row level security.
+
+This tutorial walks through Supabase RLS from an empty table to a working multi-user schema: enabling RLS, writing your first policy, the `auth.uid()` helper, the difference between `USING` and `WITH CHECK`, how policies behave across joins, when the service role bypasses everything, and how to debug a policy that silently returns zero rows.
+
+## What row level security actually does
+
+RLS is a PostgreSQL feature, not a Supabase one. When a table has RLS enabled, the planner appends your policy expression to the `WHERE` clause of every statement that touches it. A query like `SELECT * FROM notes` becomes, in effect, `SELECT * FROM notes WHERE <policy expression>`. There is no way to route around it from SQL, because the rewrite happens inside the server after parsing.
+
+Two consequences follow immediately, and both surprise people:
+
+1. **Enabling RLS with no policies denies everything.** An empty policy set is not "allow all" — it is "allow nothing". A freshly locked-down table returns zero rows to every role except the table owner and superusers.
+2. **Policies are permissive by default and OR'd together.** If you write three `SELECT` policies, a row is visible when *any* of them matches. This trips people who expect additional policies to narrow access; they widen it.
+
+## Step 1: create a table and turn RLS on
+
+Everything in Supabase's `public` schema is exposed through the API, so assume every table needs a policy from the moment it exists.
+
+```sql
+create table public.notes (
+  id          uuid primary key default gen_random_uuid(),
+  user_id     uuid not null references auth.users (id) on delete cascade,
+  title       text not null,
+  body        text,
+  is_public   boolean not null default false,
+  created_at  timestamptz not null default now()
+);
+
+-- Lock the table down before inserting a single row.
+alter table public.notes enable row level security;
+```
+
+At this point `select * from notes` from the browser client returns an empty array — not an error. PostgREST reports the filtered result, so a missing policy looks exactly like a missing row. Remember that; it is the number one cause of "my Supabase query returns nothing" questions.
+
+Index the column your policies filter on, right now, while the table is empty:
+
+```sql
+create index notes_user_id_idx on public.notes (user_id);
+```
+
+Every policy predicate becomes a per-query filter. Without that index, RLS turns each read into a sequential scan.
+
+## Step 2: your first policy with auth.uid()
+
+Supabase signs a JWT for every logged-in user and passes it to Postgres as a request setting. `auth.uid()` is a small SQL function that reads the `sub` claim out of it and returns a `uuid`:
+
+```sql
+-- Roughly what Supabase installs for you
+create or replace function auth.uid()
+returns uuid
+language sql stable
+as $$
+  select nullif(
+    current_setting('request.jwt.claims', true)::jsonb ->> 'sub',
+    ''
+  )::uuid
+$$;
+```
+
+For an anonymous request there is no `sub` claim, so `auth.uid()` returns `NULL` — and `user_id = NULL` is `NULL`, which is not `true`, so the row is hidden. Anonymous users falling through to zero rows is the desired default.
+
+Now the policy:
+
+```sql
+create policy "Users can read their own notes"
+  on public.notes
+  for select
+  to authenticated
+  using (user_id = auth.uid());
+```
+
+Read that as: for `SELECT` statements issued by the `authenticated` role, a row is visible when its `user_id` equals the caller's id. The `to authenticated` clause matters — without it the policy also applies to `anon`, which costs you nothing here but is sloppy, and Supabase's linter will flag it.
+
+## Step 3: USING versus WITH CHECK
+
+This is the distinction that decides whether your policies are actually safe.
+
+- `USING` is evaluated against rows **that already exist**. It applies to `SELECT`, `UPDATE` and `DELETE`, and decides which rows the caller can see or target.
+- `WITH CHECK` is evaluated against rows **as they will be written**. It applies to `INSERT`, and to the *new* version of a row in an `UPDATE`.
+
+An `INSERT` policy therefore takes only `WITH CHECK`:
+
+```sql
+create policy "Users can create their own notes"
+  on public.notes
+  for insert
+  to authenticated
+  with check (user_id = auth.uid());
+```
+
+Without this, a client could insert a row with somebody else's `user_id` — writing into another user's account.
+
+`UPDATE` needs both, and this is where the common bug lives:
+
+```sql
+create policy "Users can update their own notes"
+  on public.notes
+  for update
+  to authenticated
+  using (user_id = auth.uid())          -- which rows may I target?
+  with check (user_id = auth.uid());    -- what may I turn them into?
+```
+
+If you write the `USING` clause and omit `WITH CHECK`, PostgreSQL falls back to using the `USING` expression for the check on some paths but not in a way you should rely on. Worse, if you write a looser `WITH CHECK`, a user can `update notes set user_id = '<victim-uuid>'` and hand their own row to someone else — or, with a differently shaped schema, steal one. Always write both, and make them match unless you deliberately want asymmetry.
+
+`DELETE` takes only `USING`:
+
+```sql
+create policy "Users can delete their own notes"
+  on public.notes
+  for delete
+  to authenticated
+  using (user_id = auth.uid());
+```
+
+Writing four separate policies rather than one `for all` policy is more verbose, but it lets you grant read without granting write, which is usually what you want.
+
+## Step 4: mixing public and private rows
+
+Real applications rarely have one rule. Say public notes should be readable by anyone, including logged-out visitors. Because permissive policies are OR'd, you add a second `SELECT` policy rather than complicating the first:
+
+```sql
+create policy "Anyone can read public notes"
+  on public.notes
+  for select
+  to anon, authenticated
+  using (is_public = true);
+```
+
+A row is now visible if it belongs to you **or** if it is marked public. Keep each policy expressing one idea; the OR does the composition.
+
+When you need to *narrow* rather than widen, use a restrictive policy. Restrictive policies are AND'd with the result of all permissive ones:
+
+```sql
+-- Nobody, under any other policy, sees soft-deleted rows.
+create policy "Hide soft-deleted notes"
+  on public.notes
+  as restrictive
+  for select
+  to anon, authenticated
+  using (deleted_at is null);
+```
+
+## Step 5: policies that depend on another table
+
+Membership models — a user can read a note if they belong to the note's workspace — need a lookup. The naive version works but is slow:
+
+```sql
+create policy "Members can read workspace notes"
+  on public.notes
+  for select
+  to authenticated
+  using (
+    exists (
+      select 1
+      from public.memberships m
+      where m.workspace_id = notes.workspace_id
+        and m.user_id = auth.uid()
+    )
+  );
+```
+
+The subquery is correlated with each candidate row, and `auth.uid()` is re-parsed from the JWT claims repeatedly. Two fixes, both worth applying:
+
+**Wrap volatile calls in a scalar subquery** so the planner evaluates them once per statement instead of once per row:
+
+```sql
+using (
+  exists (
+    select 1 from public.memberships m
+    where m.workspace_id = notes.workspace_id
+      and m.user_id = (select auth.uid())
+  )
+)
+```
+
+That `(select auth.uid())` trick is not cosmetic — on a table with a few hundred thousand rows it routinely turns a multi-second query into a few milliseconds.
+
+**Push the lookup into a `security definer` function** when the joined table is itself protected by RLS, otherwise the policy's own subquery gets filtered by the *other* table's policies and you end up with recursive policy evaluation:
+
+```sql
+create or replace function public.is_workspace_member(w uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public, pg_temp   -- always pin search_path in a definer function
+as $$
+  select exists (
+    select 1 from public.memberships
+    where workspace_id = w and user_id = auth.uid()
+  );
+$$;
+
+create policy "Members can read workspace notes"
+  on public.notes for select to authenticated
+  using (public.is_workspace_member(workspace_id));
+```
+
+`security definer` runs the function as its owner, bypassing RLS on `memberships`. That is exactly what you want here, and exactly why you must pin `search_path` — an unpinned definer function is a privilege escalation waiting to happen.
+
+## Step 6: the service role bypasses everything
+
+Supabase issues a `service_role` key alongside the anon key. That role is `BYPASSRLS`: policies do not apply to it at all. It exists for server-side jobs, migrations and admin tooling.
+
+Never ship the service role key to a browser, a mobile app, or a public repo. Anything holding that key has full read/write access to every table regardless of policy. Keep it in server-side environment variables only, and if one leaks, rotate it in the dashboard immediately — revoking it is the only remedy, because there is no policy that can constrain it.
+
+Note also that the table *owner* is exempt from RLS by default. In Supabase the API roles are not owners, so this rarely bites, but if you connect with the `postgres` superuser to test a policy, you will see every row and conclude your policy is broken when it is fine. Test with a real user session, or force the check:
+
+```sql
+alter table public.notes force row level security;
+```
+
+## Step 7: debugging a policy that returns nothing
+
+When a query comes back empty, work down this list.
+
+**Confirm RLS state and the policies that exist:**
+
+```sql
+select relname, relrowsecurity, relforcerowsecurity
+from pg_class
+where oid = 'public.notes'::regclass;
+
+select policyname, permissive, roles, cmd, qual, with_check
+from pg_policies
+where schemaname = 'public' and tablename = 'notes';
+```
+
+`qual` is the `USING` expression and `with_check` is the `WITH CHECK` expression, both as the server stored them. If a policy you thought you created is not listed, that is your answer.
+
+**Impersonate the actual caller.** This is the technique that resolves most cases — it reproduces exactly what PostgREST does:
+
+```sql
+begin;
+set local role authenticated;
+set local request.jwt.claims = '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}';
+
+select * from public.notes;      -- what that user really sees
+select auth.uid();               -- sanity-check the claim parsed
+rollback;
+```
+
+If `auth.uid()` returns `NULL` here, your JWT claims are not shaped the way the function expects, and every policy comparing against it will fail closed.
+
+**Check grants, which RLS does not replace.** Policies filter rows; `GRANT` decides whether the role may touch the table at all. Supabase grants the API roles broad table privileges by default, but if you have tightened them, a missing `GRANT SELECT` produces a permission error rather than an empty set — a useful distinction when triaging.
+
+**Read the plan.** `EXPLAIN` shows the injected filter, which confirms the policy is being applied and reveals whether it is using your index:
+
+```sql
+explain (analyze, buffers)
+select * from public.notes where is_public = true;
+```
+
+Look for the policy predicate in the `Filter` or `Index Cond` line. A `Seq Scan` with a filter on `user_id` on a large table means you skipped the index in step 1.
+
+Running these checks against a hosted Postgres is easier in a client that renders plans and lets you switch roles without rebuilding a connection string each time. [Chat2DB](https://chat2db.ai/download) is a free AI-powered database client that connects to Supabase over the standard Postgres protocol, visualises execution plans, and will draft policy SQL from a plain-English description of the rule you want; there is also a browser version at [app.chat2db.ai](https://app.chat2db.ai) if you would rather not install anything.
+
+## A complete working example
+
+Putting the pieces together for a small collaborative notes app:
+
+```sql
+-- Schema
+create table public.workspaces (
+  id    uuid primary key default gen_random_uuid(),
+  name  text not null
+);
+
+create table public.memberships (
+  workspace_id uuid not null references public.workspaces (id) on delete cascade,
+  user_id      uuid not null references auth.users (id) on delete cascade,
+  role         text not null default 'member' check (role in ('member','admin')),
+  primary key (workspace_id, user_id)
+);
+
+create table public.notes (
+  id           uuid primary key default gen_random_uuid(),
+  workspace_id uuid not null references public.workspaces (id) on delete cascade,
+  user_id      uuid not null references auth.users (id) on delete cascade,
+  title        text not null,
+  body         text,
+  created_at   timestamptz not null default now()
+);
+
+create index memberships_user_idx on public.memberships (user_id);
+create index notes_workspace_idx  on public.notes (workspace_id);
+create index notes_user_idx       on public.notes (user_id);
+
+alter table public.workspaces  enable row level security;
+alter table public.memberships enable row level security;
+alter table public.notes       enable row level security;
+
+-- Membership helper, used by every policy below
+create or replace function public.is_member(w uuid)
+returns boolean language sql stable security definer
+set search_path = public, pg_temp as $$
+  select exists (
+    select 1 from public.memberships
+    where workspace_id = w and user_id = auth.uid()
+  );
+$$;
+
+-- Workspaces: see the ones you belong to
+create policy "read own workspaces" on public.workspaces
+  for select to authenticated using (public.is_member(id));
+
+-- Memberships: see your own membership rows
+create policy "read own memberships" on public.memberships
+  for select to authenticated using (user_id = (select auth.uid()));
+
+-- Notes: read anything in your workspaces
+create policy "read workspace notes" on public.notes
+  for select to authenticated using (public.is_member(workspace_id));
+
+-- Notes: write only as yourself, only into your workspaces
+create policy "insert own notes" on public.notes
+  for insert to authenticated
+  with check (user_id = (select auth.uid()) and public.is_member(workspace_id));
+
+create policy "update own notes" on public.notes
+  for update to authenticated
+  using (user_id = (select auth.uid()))
+  with check (user_id = (select auth.uid()) and public.is_member(workspace_id));
+
+create policy "delete own notes" on public.notes
+  for delete to authenticated
+  using (user_id = (select auth.uid()));
+```
+
+Every table is enabled, every access path has an explicit policy, writes are constrained on both ends, and the membership lookup happens in one pinned `security definer` function instead of being duplicated across six policies.
+
+## Checklist before you ship
+
+- Every table in `public` has RLS enabled — no exceptions, including join tables and lookup tables.
+- Every table has at least one policy, or it is deliberately inaccessible.
+- Every `UPDATE` policy has both `USING` and `WITH CHECK`.
+- Every `INSERT` policy has `WITH CHECK` constraining the ownership column.
+- Volatile helpers are wrapped as `(select auth.uid())`.
+- `security definer` helpers set an explicit `search_path`.
+- Columns referenced by policies are indexed.
+- The service role key exists only in server-side environment variables.
+- You have tested each policy by impersonating a real user, not as `postgres`.
+
+Row level security is the difference between a Supabase project that is safe to point a browser at and one that is a public database with extra steps. Write the policies as you create each table, test them by impersonation, and treat an empty result set as a policy question until proven otherwise.

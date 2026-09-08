@@ -1,0 +1,292 @@
+---
+title: "PostgreSQL Column-Level Security Guide"
+description: "Restrict access to individual columns in PostgreSQL with column-level GRANT, views and policies. Covers SELECT and UPDATE grants, pitfalls and auditing."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 8, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# PostgreSQL Column-Level Security Guide
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 8, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+Row level security gets all the attention, but a large share of real access-control requirements are about columns, not rows. The support team should see every customer record but not the salary field. The analytics role needs the whole `employees` table except `national_id`. The billing service can update `plan` but must never touch `credit_balance`.
+
+PostgreSQL supports this directly: `GRANT` accepts a column list. This guide covers how column-level privileges work, where they behave differently from table-level ones, the two workarounds for the cases they do not cover, and how to audit what you have granted.
+
+## Column-level GRANT basics
+
+The syntax is table-level `GRANT` with a parenthesised column list.
+
+```sql
+CREATE TABLE employees (
+  id             bigserial PRIMARY KEY,
+  full_name      text NOT NULL,
+  email          text NOT NULL,
+  department     text NOT NULL,
+  hire_date      date NOT NULL,
+  salary_cents   bigint NOT NULL,
+  national_id    text,
+  manager_id     bigint REFERENCES employees (id)
+);
+
+CREATE ROLE hr_analyst LOGIN;
+GRANT USAGE ON SCHEMA public TO hr_analyst;
+
+-- Everything except salary and national_id
+GRANT SELECT (id, full_name, email, department, hire_date, manager_id)
+  ON employees TO hr_analyst;
+```
+
+Now:
+
+```sql
+SET ROLE hr_analyst;
+
+SELECT id, full_name, department FROM employees;   -- works
+
+SELECT * FROM employees;
+-- ERROR:  permission denied for table employees
+```
+
+That second error is the first thing to understand. `SELECT *` requires privileges on *every* column, so it fails as soon as one column is withheld — and the error message says "permission denied for table", not "for column", which sends people looking in the wrong place. Applications and ORMs that emit `SELECT *` need to be changed to enumerate columns before column-level grants are workable.
+
+Only four privileges accept a column list: `SELECT`, `INSERT`, `UPDATE`, and `REFERENCES`. `DELETE` does not, because deleting a row removes all of it — there is no such thing as deleting a column's worth of a row.
+
+## Column grants for writes
+
+`UPDATE` is where column grants earn their keep:
+
+```sql
+CREATE ROLE billing_service LOGIN;
+GRANT USAGE ON SCHEMA public TO billing_service;
+
+GRANT SELECT (id, plan, credit_balance) ON accounts TO billing_service;
+GRANT UPDATE (plan) ON accounts TO billing_service;
+```
+
+```sql
+SET ROLE billing_service;
+
+UPDATE accounts SET plan = 'pro' WHERE id = 42;             -- works
+UPDATE accounts SET credit_balance = 999999 WHERE id = 42;  -- permission denied
+```
+
+A subtlety that catches people: the `WHERE` clause needs `SELECT` privilege on the columns it references. This fails even though the `SET` target is permitted:
+
+```sql
+UPDATE accounts SET plan = 'pro' WHERE credit_balance > 100;
+-- ERROR: permission denied for table accounts   (no SELECT on credit_balance)
+```
+
+So an update role usually needs `SELECT` on more columns than it needs `UPDATE` on. Grant them explicitly.
+
+`INSERT` works the same way, and interacts with defaults in a useful manner:
+
+```sql
+GRANT INSERT (full_name, email, department, hire_date) ON employees TO hr_analyst;
+```
+
+The role can create employees but cannot set a salary. Whether the insert succeeds depends on whether the withheld columns have defaults or allow `NULL` — `salary_cents` above is `NOT NULL` with no default, so the insert fails. Give withheld `NOT NULL` columns a default when you plan to restrict them:
+
+```sql
+ALTER TABLE employees ALTER COLUMN salary_cents SET DEFAULT 0;
+```
+
+## How column and table privileges combine
+
+The rule is a union: a role may access a column if it has the privilege at the table level **or** for that specific column. Table-level grants are not a ceiling that column grants carve out of — they are a floor.
+
+This means the following does *not* restrict anything:
+
+```sql
+GRANT SELECT ON employees TO hr_analyst;                    -- all columns
+GRANT SELECT (full_name) ON employees TO hr_analyst;        -- adds nothing
+```
+
+The role still reads every column. To restrict, you must ensure no table-level grant exists:
+
+```sql
+REVOKE SELECT ON employees FROM hr_analyst;
+GRANT SELECT (id, full_name, department) ON employees TO hr_analyst;
+```
+
+There is no `REVOKE SELECT (salary_cents)` that subtracts from a table-level grant in the way people expect — revoking a column privilege only removes a column-level grant. Always revoke at the table level first, then grant the columns you want. This is the single most common mistake with column privileges, and it fails open: you believe a column is protected when it is not.
+
+Watch `PUBLIC` too. If anyone ran `GRANT SELECT ON employees TO PUBLIC`, every role inherits it and your column grants are decorative:
+
+```sql
+REVOKE ALL ON employees FROM PUBLIC;
+```
+
+## What column grants do not protect
+
+Column-level privileges control direct access to values. They do not hide the column's *existence*, and they do not stop every indirect inference.
+
+**The schema is still visible.** Any role can read `information_schema.columns` and see that `salary_cents` exists, along with its type and default:
+
+```sql
+SET ROLE hr_analyst;
+SELECT column_name, data_type FROM information_schema.columns
+WHERE table_name = 'employees';
+-- lists salary_cents
+```
+
+If the column name itself is sensitive, you need a view or a separate table.
+
+**Constraint violations can leak.** If a withheld column has a unique constraint, an insert that collides raises an error naming the constraint — and sometimes the conflicting value:
+
+```sql
+INSERT INTO employees (email) VALUES ('alice@example.com');
+-- ERROR: duplicate key value violates unique constraint "employees_email_key"
+-- DETAIL: Key (email)=(alice@example.com) already exists.
+```
+
+This is an existence oracle. It matters when the mere presence of a value is confidential.
+
+**Statistics may be readable.** `pg_stats` exposes most-common-values and histogram bounds. Access to it is restricted to columns the role can read, so this is handled correctly by default — but if you have granted broader catalog access to a monitoring role, check it.
+
+**Functions and triggers run with their own privileges.** A `SECURITY DEFINER` function owned by a privileged role can read anything, including columns the caller cannot. Audit those functions when you audit grants.
+
+## Workaround 1: views for anything more than hiding
+
+When you need to *transform* a column rather than hide it — show the last four digits of an account number, bucket a salary into a band — a view is the tool:
+
+```sql
+CREATE OR REPLACE VIEW employees_public
+WITH (security_invoker = true) AS
+SELECT
+  id,
+  full_name,
+  email,
+  department,
+  hire_date,
+  CASE
+    WHEN salary_cents < 5000000  THEN 'band_1'
+    WHEN salary_cents < 10000000 THEN 'band_2'
+    ELSE 'band_3'
+  END AS salary_band,
+  manager_id
+FROM employees;
+
+REVOKE ALL ON employees FROM hr_analyst;
+GRANT SELECT ON employees_public TO hr_analyst;
+```
+
+`security_invoker = true` (PostgreSQL 15 and later) makes the view run with the caller's privileges. Without it, the view runs as its owner, which is how a view becomes a privilege-escalation path around row level security on the base table. If you are on an older version, understand that a view is deliberately a controlled bypass — grant it carefully.
+
+Views also solve the `SELECT *` problem: the role can safely `SELECT *` from the view, so existing application code and BI tools work unchanged. In practice this is why most teams reach for views over raw column grants for read paths, and reserve column grants for write paths where views are awkward.
+
+## Workaround 2: vertical partitioning
+
+For genuinely sensitive columns — national IDs, medical data, secrets — the strongest option is to move them out of the table entirely:
+
+```sql
+CREATE TABLE employee_sensitive (
+  employee_id bigint PRIMARY KEY REFERENCES employees (id) ON DELETE CASCADE,
+  national_id text NOT NULL,
+  bank_account text
+);
+
+ALTER TABLE employees DROP COLUMN national_id;
+
+REVOKE ALL ON employee_sensitive FROM PUBLIC;
+GRANT SELECT, INSERT, UPDATE ON employee_sensitive TO hr_admin;
+```
+
+Now the column's existence, its statistics, its constraint errors and its index are all inside an object that most roles cannot touch at all. Backups of the main table do not contain it. A `SELECT *` by a curious analyst cannot surface it by accident.
+
+The cost is a join whenever you legitimately need the data, and an extra table to keep in sync. For a handful of truly high-sensitivity columns, that is a good trade.
+
+## Combining column and row level security
+
+The two compose cleanly, and most real requirements need both: "managers can see their own reports' rows, but only HR sees the salary column."
+
+```sql
+ALTER TABLE employees ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY manager_sees_reports ON employees
+  FOR SELECT TO manager_role
+  USING (manager_id = current_setting('app.employee_id', true)::bigint);
+
+REVOKE ALL ON employees FROM manager_role;
+GRANT SELECT (id, full_name, email, department, hire_date, manager_id)
+  ON employees TO manager_role;
+```
+
+Row policies filter *which rows*; column grants decide *which columns*. They are evaluated independently, so a manager querying a permitted column on a non-permitted row gets nothing, and querying a non-permitted column on any row gets an error.
+
+Index the policy column — `manager_id` here — or every query against this table becomes a sequential scan.
+
+## Auditing what you have granted
+
+Column privileges live in `information_schema.column_privileges`:
+
+```sql
+SELECT grantee, table_schema, table_name, column_name, privilege_type
+FROM information_schema.column_privileges
+WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+  AND grantee <> 'postgres'
+ORDER BY grantee, table_name, column_name;
+```
+
+The dangerous case is a table-level grant silently overriding your column grants. Find those:
+
+```sql
+SELECT grantee, table_name, privilege_type
+FROM information_schema.table_privileges
+WHERE table_schema = 'public'
+  AND privilege_type IN ('SELECT', 'UPDATE')
+  AND grantee IN (
+    SELECT DISTINCT grantee FROM information_schema.column_privileges
+    WHERE table_schema = 'public'
+  )
+ORDER BY grantee, table_name;
+```
+
+Any row returned is a role that has both a table-level grant and column-level grants on the same table — meaning the column grants are doing nothing. That query belongs in your CI as an assertion.
+
+In `psql`, `\dp` shows the combined ACL, with column-level entries listed separately underneath the table:
+
+```
+                              Access privileges
+ Schema |   Name    | Type  |     Access privileges     | Column privileges
+--------+-----------+-------+---------------------------+---------------------------
+ public | employees | table | postgres=arwdDxt/postgres | full_name:            +
+        |           |       |                           |   hr_analyst=r/postgres+
+        |           |       |                           | department:           +
+        |           |       |                           |   hr_analyst=r/postgres
+```
+
+And to check a specific question directly:
+
+```sql
+SELECT has_column_privilege('hr_analyst', 'employees', 'salary_cents', 'SELECT');
+-- false
+```
+
+`has_column_privilege` is the right function for automated tests — write one assertion per sensitive column and run them on every deploy, so a future migration that adds a broad `GRANT SELECT` fails the build instead of quietly exposing salaries.
+
+Keeping track of which roles hold which grants across a schema with a few hundred tables is genuinely tedious in a terminal. [Chat2DB](https://chat2db.ai/download) is a free AI-powered database client that shows roles, table and column privileges in a browsable tree and will generate the corresponding `GRANT`/`REVOKE` statements from a plain description of the access you want — handy when you are reconciling an audit finding. There is a browser version at [app.chat2db.ai](https://app.chat2db.ai).
+
+## Practical recommendations
+
+- **Revoke at the table level first.** A leftover table-level `GRANT SELECT` makes every column grant on that table meaningless.
+- **Revoke from `PUBLIC`** on any table with restricted columns.
+- **Stop emitting `SELECT *`** in application code before introducing column grants, or every query breaks.
+- **Give withheld `NOT NULL` columns a default** so restricted roles can still insert.
+- **Remember `WHERE` needs `SELECT`.** An `UPDATE` role usually needs read access to more columns than it writes.
+- **Prefer views for read paths** where you need transformation or where tools require `SELECT *`; use `security_invoker = true`.
+- **Vertically partition genuinely sensitive columns** rather than relying on grants alone.
+- **Assert with `has_column_privilege` in CI** so a future migration cannot quietly widen access.
+- **Set default privileges** so new tables start closed:
+
+```sql
+ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM PUBLIC;
+```
+
+Column-level security in PostgreSQL is genuinely useful and genuinely sharp-edged. The mechanism is sound; the failure mode is almost always a broader grant you forgot about sitting underneath it. Audit for that one thing and the rest follows.

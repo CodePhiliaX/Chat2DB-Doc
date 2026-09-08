@@ -1,0 +1,332 @@
+---
+title: "PostgreSQL Data Masking and Anonymization Guide"
+description: "How to mask sensitive data in PostgreSQL: masked views, deterministic hashing, in-place anonymization of dev copies, and the PostgreSQL Anonymizer extension."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 8, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# PostgreSQL Data Masking and Anonymization Guide
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 8, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+The staging database is a copy of production. So is the analytics replica, the laptop dump someone took to debug an issue last Tuesday, and the CI fixture that got committed to git in 2023. Each one contains real customer emails, real phone numbers, and possibly real card data — and each one has weaker access controls than production does.
+
+Data masking fixes this by replacing sensitive values with realistic but fake ones. This guide covers the three approaches that work in PostgreSQL — masked views, in-place anonymization, and the PostgreSQL Anonymizer extension — plus the parts people get wrong: preserving joins, avoiding re-identification, and remembering that a masked column is not masked if the original still exists in an index, a log, or a backup.
+
+## Static versus dynamic masking
+
+**Static masking** rewrites the stored data. You restore a dump into a non-production database and run `UPDATE` statements. The real values no longer exist in that copy, so losing the copy is not a breach. This is what you want for dev and test environments.
+
+**Dynamic masking** keeps the real values and rewrites results at query time based on who is asking. This is what you want when analysts need live production data but should not see raw PII.
+
+They solve different problems, and most organisations need both. Static masking protects copies; dynamic masking protects access.
+
+## Approach 1: masked views
+
+The simplest dynamic masking in PostgreSQL needs no extensions. Create a view that transforms sensitive columns, grant the view, revoke the base table.
+
+```sql
+CREATE TABLE customers (
+  id            bigserial PRIMARY KEY,
+  email         text NOT NULL,
+  full_name     text NOT NULL,
+  phone         text,
+  date_of_birth date,
+  credit_card   text,
+  country       text NOT NULL,
+  created_at    timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO customers (email, full_name, phone, date_of_birth, credit_card, country)
+VALUES
+  ('alice.smith@example.com', 'Alice Smith', '+1-415-555-0134', '1988-03-14', '4111111111111111', 'US'),
+  ('bob.jones@example.co.uk', 'Bob Jones',   '+44-20-7946-0018', '1975-11-02', '5500005555555559', 'GB');
+```
+
+The view:
+
+```sql
+CREATE OR REPLACE VIEW customers_masked
+WITH (security_invoker = true) AS
+SELECT
+  id,
+  left(email, 1) || '***@' || split_part(email, '@', 2)              AS email,
+  left(full_name, 1) || '***'                                        AS full_name,
+  CASE WHEN phone IS NULL THEN NULL
+       ELSE repeat('*', greatest(length(phone) - 4, 0)) || right(phone, 4) END AS phone,
+  date_trunc('year', date_of_birth)::date                            AS date_of_birth,
+  '**** **** **** ' || right(regexp_replace(credit_card, '\D', '', 'g'), 4) AS credit_card,
+  country,
+  created_at
+FROM customers;
+```
+
+Result:
+
+```
+ id |        email        | full_name |      phone      | date_of_birth |     credit_card
+----+---------------------+-----------+-----------------+---------------+---------------------
+  1 | a***@example.com    | A***      | ***********0134 | 1988-01-01    | **** **** **** 1111
+  2 | b***@example.co.uk  | B***      | ************0018| 1975-01-01    | **** **** **** 5559
+```
+
+Now the part that people skip, which makes the whole thing pointless if you skip it:
+
+```sql
+REVOKE ALL ON customers FROM analyst;
+GRANT USAGE ON SCHEMA public TO analyst;
+GRANT SELECT ON customers_masked TO analyst;
+```
+
+A view that hides columns is worthless if the same role can still `SELECT * FROM customers`.
+
+`WITH (security_invoker = true)` — available from PostgreSQL 15 — makes the view execute with the caller's privileges rather than the view owner's. Without it, a view owned by a privileged role becomes a way to bypass row level security on the base table. Always set it unless you specifically want the opposite.
+
+**Limits of the view approach.** A determined analyst with permission to create functions can sometimes infer values through error messages or timing. `pg_stats` may expose most-common-values for the underlying column if they can read it. And views do not compose well with ORMs that expect to write. Treat masked views as a reasonable control against accidental exposure, not as a defence against a motivated insider.
+
+## Approach 2: deterministic hashing that preserves joins
+
+The naive mask breaks your test data. If `customer_id` in `orders` is randomised independently of `customer_id` in `customers`, no join returns anything, and your staging environment is useless.
+
+The fix is a deterministic transform: the same input always produces the same output.
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE OR REPLACE FUNCTION mask_hash(value text, salt text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT encode(sha256((salt || value)::bytea), 'hex');
+$$;
+```
+
+Apply the same salt across every table in one anonymisation run, and referential relationships survive:
+
+```sql
+SELECT mask_hash('alice.smith@example.com', 'run-2026-09-08');
+-- 5e2c1a...  (same everywhere, this run)
+```
+
+Three rules make this safe:
+
+1. **The salt must be secret.** Without it, an attacker hashes a guessed email and compares. Email addresses have low enough entropy that an unsalted hash is effectively reversible.
+2. **The salt must be identical within a run** or joins break.
+3. **The salt must change between runs.** Otherwise two dumps taken months apart can be correlated, and a value that appears in both is linkable.
+
+For realistic-looking output rather than hex strings, hash into a deterministic pick from a fake-name list:
+
+```sql
+CREATE TABLE fake_first_names (id int PRIMARY KEY, name text);
+INSERT INTO fake_first_names VALUES
+  (0,'Ada'),(1,'Bo'),(2,'Cleo'),(3,'Dev'),(4,'Elin'),
+  (5,'Finn'),(6,'Gia'),(7,'Hugo'),(8,'Isla'),(9,'Jae');
+
+CREATE OR REPLACE FUNCTION fake_name(value text, salt text)
+RETURNS text
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT f.name
+  FROM fake_first_names f
+  WHERE f.id = ('x' || substr(encode(sha256((salt || value)::bytea), 'hex'), 1, 8))::bit(32)::int % 10;
+$$;
+```
+
+Same person, same fake name, every table, every time — which makes the staging environment behave like the real one during debugging.
+
+## Approach 3: in-place anonymization of a restored copy
+
+This is the workhorse for building dev environments. Restore production, then destroy the PII before anyone connects.
+
+Start with a guard, because the one thing you must never do is run this against production:
+
+```sql
+DO $$
+BEGIN
+  IF current_database() NOT LIKE '%_dev' AND current_database() NOT LIKE '%_staging' THEN
+    RAISE EXCEPTION 'Refusing to anonymise %; rename the restored copy first', current_database();
+  END IF;
+END $$;
+```
+
+Then the update itself:
+
+```sql
+UPDATE customers SET
+  email         = mask_hash(email, 'run-2026-09-08') || '@example.invalid',
+  full_name     = fake_name(email, 'run-2026-09-08') || ' ' || fake_name(id::text, 'run-2026-09-08'),
+  phone         = '+1-555-' || lpad((abs(hashtext(email)) % 10000)::text, 4, '0'),
+  date_of_birth = date_trunc('year', date_of_birth)::date,
+  credit_card   = '4111111111111111';
+```
+
+Note `@example.invalid` — a reserved TLD that cannot resolve. This is the cheap insurance against the classic staging incident where a background job emails 40,000 real customers because someone forgot to disable the mailer.
+
+**On large tables, batch it.** A single `UPDATE` rewriting ten million rows holds one transaction open, doubles the table size with dead tuples, and can blow out your WAL:
+
+```sql
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS masked_at timestamptz;
+CREATE INDEX ON customers (masked_at) WHERE masked_at IS NULL;
+
+DO $$
+DECLARE touched bigint;
+BEGIN
+  LOOP
+    WITH batch AS (
+      SELECT ctid FROM customers
+      WHERE masked_at IS NULL
+      LIMIT 10000
+      FOR UPDATE SKIP LOCKED
+    )
+    UPDATE customers c SET
+      email     = mask_hash(c.email, 'run-2026-09-08') || '@example.invalid',
+      full_name = fake_name(c.email, 'run-2026-09-08'),
+      masked_at = now()
+    FROM batch WHERE c.ctid = batch.ctid;
+
+    GET DIAGNOSTICS touched = ROW_COUNT;
+    EXIT WHEN touched = 0;
+    COMMIT;                    -- procedural COMMIT, PostgreSQL 11+
+  END LOOP;
+END $$;
+
+VACUUM (ANALYZE) customers;
+```
+
+That `VACUUM` at the end is not optional. Updating every row leaves a dead tuple for every row; without a vacuum the table stays double-sized and every query pays for it.
+
+## Approach 4: the PostgreSQL Anonymizer extension
+
+For anything beyond a handful of columns, `postgresql_anonymizer` is worth the install. It stores masking rules as `SECURITY LABEL` metadata on the columns themselves, which means the rules live with the schema and travel with your migrations.
+
+```sql
+CREATE EXTENSION IF NOT EXISTS anon CASCADE;
+SELECT anon.init();
+
+-- Which role sees masked data
+SECURITY LABEL FOR anon ON ROLE analyst IS 'MASKED';
+
+-- Per-column rules
+SECURITY LABEL FOR anon ON COLUMN customers.email
+  IS 'MASKED WITH FUNCTION anon.partial_email(email)';
+
+SECURITY LABEL FOR anon ON COLUMN customers.full_name
+  IS 'MASKED WITH FUNCTION anon.fake_last_name()';
+
+SECURITY LABEL FOR anon ON COLUMN customers.phone
+  IS 'MASKED WITH FUNCTION anon.partial(phone, 0, $$*******$$, 4)';
+
+SECURITY LABEL FOR anon ON COLUMN customers.date_of_birth
+  IS 'MASKED WITH FUNCTION anon.dnoise(date_of_birth, $$1 year$$)';
+
+SECURITY LABEL FOR anon ON COLUMN customers.credit_card
+  IS 'MASKED WITH VALUE NULL';
+```
+
+Then choose your mode:
+
+```sql
+-- Dynamic: masked roles see masked values, everyone else sees the truth
+SELECT anon.start_dynamic_masking();
+
+-- Static: bake the rules into the data, irreversibly (dev copies only)
+SELECT anon.anonymize_database();
+```
+
+The extension ships useful primitives beyond simple redaction:
+
+- **`anon.dnoise(column, interval)`** shifts dates by a random amount, preserving approximate distributions for analytics while breaking exact matching.
+- **`anon.random_in_enum()`** and the faker functions generate values that satisfy your `CHECK` constraints, so masked data still loads.
+- **Generalisation** replaces exact values with ranges — a birth date becomes an age bracket — which is the right tool when you need aggregate accuracy without individual identifiability.
+
+Inspect what is configured with:
+
+```sql
+SELECT * FROM anon.pg_masking_rules;
+```
+
+## The parts people get wrong
+
+**Masking the column but not the index.** If you mask a column and leave an existing index in place, the index still contains the original values in its pages until it is rebuilt. `VACUUM` does not rewrite index entries for values that no longer exist in visible tuples in the way you might assume. After a static anonymisation run, reindex:
+
+```sql
+REINDEX TABLE CONCURRENTLY customers;
+```
+
+**Forgetting the audit and log tables.** The `orders` table gets masked; the `audit_log` table containing `{"email": "alice.smith@example.com"}` in a JSONB payload does not. Search for them:
+
+```sql
+SELECT table_schema, table_name, column_name, data_type
+FROM information_schema.columns
+WHERE column_name ~* '(email|phone|ssn|card|passport|address|birth|password|token|ip_addr)'
+  AND table_schema NOT IN ('pg_catalog', 'information_schema')
+ORDER BY 1, 2, 3;
+```
+
+Then search the JSONB columns specifically, because a name-based scan will not find PII buried in a payload:
+
+```sql
+SELECT id, payload FROM audit_log
+WHERE payload::text ~* '[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}'
+LIMIT 20;
+```
+
+**Leaving the original in a backup on the same host.** Anonymising a restored copy while the source dump sits in `/tmp` on the same machine achieves nothing. Delete the dump as part of the same script.
+
+**Under-masking free-text fields.** A `notes` column contains "called Alice on 415-555-0134 about her Amex ending 1005". Column-level rules do not touch it. Either null free-text columns entirely in non-production copies, or run a redaction pass:
+
+```sql
+UPDATE tickets SET notes = regexp_replace(
+  regexp_replace(notes, '[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', '[email]', 'g'),
+  '\+?\d[\d\s().-]{7,}\d', '[phone]', 'g'
+);
+```
+
+**Ignoring re-identification through combinations.** Masking the name but keeping postcode, exact birth date and gender does not anonymise anyone — that trio identifies a large share of any population uniquely. If the masked copy will be shared outside your security boundary, generalise quasi-identifiers: birth year instead of birth date, region instead of postcode.
+
+**Not verifying.** Always check afterwards:
+
+```sql
+-- Should return 0
+SELECT count(*) FROM customers WHERE email NOT LIKE '%@example.invalid';
+SELECT count(*) FROM customers WHERE credit_card ~ '^\d{13,19}$' AND credit_card <> '4111111111111111';
+```
+
+## Putting it in the pipeline
+
+The refresh should be one script, run by CI, with no manual steps:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+DUMP=/tmp/prod-$(date +%F).dump
+trap 'rm -f "$DUMP"' EXIT        # the dump never outlives the script
+
+pg_dump --format=custom --no-owner --dbname="$PROD_URL" --file="$DUMP"
+
+dropdb --if-exists app_staging
+createdb app_staging
+pg_restore --dbname=app_staging --no-owner --jobs=4 "$DUMP"
+
+psql --dbname=app_staging --single-transaction --set ON_ERROR_STOP=1 -f anonymize.sql
+psql --dbname=app_staging -c 'REINDEX DATABASE app_staging;'
+psql --dbname=app_staging --set ON_ERROR_STOP=1 -f verify_anonymized.sql
+```
+
+`ON_ERROR_STOP=1` on the verification step is what turns "we have a masking script" into "we have a masking guarantee". If verification fails, the pipeline fails and nobody connects to a half-masked database.
+
+Auditing which columns still hold sensitive data across a large schema is tedious in a terminal. [Chat2DB](https://chat2db.ai/download) is a free AI-powered database client that browses schemas across connections, previews sample values column by column, and drafts masking SQL from a description of the rule you want — useful for the discovery pass where you are trying to find every table that quietly stores an email. There is a web version at [app.chat2db.ai](https://app.chat2db.ai).
+
+## Summary
+
+Use masked views with `security_invoker` for live analyst access, and revoke the base table or the view means nothing. Use deterministic salted hashing so joins survive, with a secret salt that rotates between runs. Use batched in-place `UPDATE`s with a database-name guard for dev copies, and vacuum and reindex afterwards. Reach for `postgresql_anonymizer` once you have more than a few columns, so the rules live in the schema instead of a script.
+
+Then verify, every time, in the pipeline. A masking script that is not verified is a masking script that silently stopped working three deploys ago.

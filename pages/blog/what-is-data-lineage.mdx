@@ -1,0 +1,257 @@
+---
+title: "What Is Data Lineage? Meaning, Examples, Diagrams"
+description: "Data lineage explained: what it means, table vs column-level lineage, how a lineage diagram is read, and how lineage is captured from SQL and query logs."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 8, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# What Is Data Lineage? Meaning, Examples, Diagrams
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 8, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+Someone in finance emails at 9am: the revenue number on the executive dashboard dropped 12% overnight and nobody shipped a pricing change. You now have to answer three questions fast. Where does that number come from? What changed upstream? And what else broke that nobody has noticed yet?
+
+Data lineage is the answer to all three. It is the record of where data came from, what happened to it, and where it went — the map you need before you can debug anything in a warehouse with more than about thirty tables.
+
+## Data lineage meaning
+
+**Data lineage is the documented path a piece of data takes from its origin to its final use, including every transformation applied along the way.**
+
+Think of it as a directed graph. Nodes are datasets — a Postgres table, an S3 file, a dbt model, a BI dashboard. Edges are the jobs that read from one and write to another — a Spark job, a SQL query, an Airflow task. Follow the edges backwards from a dashboard and you reach the source systems; follow them forwards from a source table and you find everything that would break if you changed it.
+
+Three related terms often get used interchangeably, and it is worth keeping them apart:
+
+- **Data lineage** — the path and transformations. Where did this come from, mechanically?
+- **Data provenance** — the origin and custody chain, with more emphasis on authorship and trust. Who produced this and are they authoritative?
+- **Data catalog** — the inventory of what datasets exist and what they mean. Lineage is a feature most catalogs include, but a catalog without lineage is just a list.
+
+## Upstream and downstream
+
+Lineage is read in two directions, and you use each for a different job.
+
+**Upstream lineage (root cause analysis)** answers "what feeds this?" You start at the broken dashboard and walk backwards until you find the change. This is what you do at 9am with finance on the phone.
+
+**Downstream lineage (impact analysis)** answers "what depends on this?" You start at a table you are about to change and walk forwards to see who breaks. This is what you do *before* dropping a column, and it is the direction that prevents incidents rather than explaining them.
+
+Most lineage failures in practice are missing downstream analysis. Someone renames `user_email` to `email` in a source table, three dbt models fail silently overnight because they were built with a `SELECT *` that quietly changed shape, and the error surfaces two days later as a bad number in a report.
+
+## Table-level versus column-level lineage
+
+This distinction determines how useful your lineage actually is.
+
+**Table-level lineage** records that `dim_customers` is built from `raw_users` and `raw_signups`. It is easy to capture — you can get it from query logs or from a dbt manifest without parsing much — and it is enough to answer "what pipeline is broken?"
+
+**Column-level lineage** records that `dim_customers.lifetime_value` is computed from `fct_orders.total_cents` and `fct_refunds.amount_cents`. It requires real SQL parsing, and it is what you need to answer "which specific number is wrong, and is this column affected by the change?"
+
+Here is the difference in practice. A model like this:
+
+```sql
+CREATE OR REPLACE VIEW dim_customers AS
+SELECT
+  u.id                                     AS customer_id,
+  u.email                                  AS email,
+  u.created_at                             AS signed_up_at,
+  coalesce(sum(o.total_cents), 0)          AS lifetime_value_cents,
+  count(DISTINCT o.id)                     AS order_count,
+  max(o.created_at)                        AS last_order_at
+FROM raw_users u
+LEFT JOIN fct_orders o ON o.customer_id = u.id
+GROUP BY u.id, u.email, u.created_at;
+```
+
+Table-level lineage says: `dim_customers` depends on `raw_users` and `fct_orders`. True, but if `fct_orders.total_cents` changes units from cents to dollars, table-level lineage tells you the whole model is affected and you check all six columns by hand.
+
+Column-level lineage says precisely:
+
+```
+raw_users.id           -> dim_customers.customer_id
+raw_users.email        -> dim_customers.email
+raw_users.created_at   -> dim_customers.signed_up_at
+fct_orders.total_cents -> dim_customers.lifetime_value_cents
+fct_orders.id          -> dim_customers.order_count
+fct_orders.created_at  -> dim_customers.last_order_at
+fct_orders.customer_id -> (join key, no direct output)
+```
+
+Now the unit change maps to exactly one downstream column, and you know which dashboard tile to check.
+
+## Reading a lineage diagram
+
+A lineage diagram is a DAG drawn left to right, sources on the left, consumers on the right.
+
+```
+  SOURCES                TRANSFORMATIONS              CONSUMERS
+
+  postgres.users ──┐
+                   ├──> stg_users ──┐
+  postgres.signups─┘                │
+                                    ├──> dim_customers ──┬──> "Revenue" dashboard
+  stripe.charges ──┐                │                    │
+                   ├──> fct_orders ─┘                    ├──> churn_model (ML)
+  stripe.refunds ──┘                                     │
+                                                         └──> monthly_finance_export.csv
+```
+
+What to look for when you are staring at one of these:
+
+- **Fan-in** — a node with many inputs is where subtle bugs hide, because a change in any one of them can shift the output.
+- **Fan-out** — a node with many outputs is a high-blast-radius change. `fct_orders` above feeds three consumers; touching it needs care.
+- **Long chains** — the more hops between source and dashboard, the longer the staleness window and the harder root-cause analysis becomes.
+- **Orphans** — a table nothing reads is a candidate for deletion, and every warehouse has more of them than anyone expects.
+- **Cycles** — a genuine cycle in a lineage graph almost always means a bug, usually a model that reads its own output.
+
+## A worked example: tracing a bad number
+
+Back to the 12% revenue drop. With column-level lineage the investigation is mechanical.
+
+**Step 1 — identify the dashboard field.** The tile reads `monthly_revenue` from `agg_monthly_finance`.
+
+**Step 2 — walk upstream one hop.**
+
+```sql
+SELECT
+  date_trunc('month', order_date) AS month,
+  sum(net_revenue_cents) / 100.0  AS monthly_revenue
+FROM fct_orders_enriched
+GROUP BY 1;
+```
+
+So `monthly_revenue` derives from `fct_orders_enriched.net_revenue_cents`.
+
+**Step 3 — walk upstream again.**
+
+```sql
+SELECT
+  o.id,
+  o.order_date,
+  o.total_cents - coalesce(r.amount_cents, 0) AS net_revenue_cents
+FROM fct_orders o
+LEFT JOIN fct_refunds r ON r.order_id = o.id;
+```
+
+Two inputs: `fct_orders.total_cents` and `fct_refunds.amount_cents`. A drop in revenue means either orders fell or refunds rose.
+
+**Step 4 — check both.**
+
+```sql
+SELECT
+  date_trunc('day', order_date) AS day,
+  count(*)                      AS orders,
+  sum(total_cents) / 100.0      AS gross,
+  count(*) FILTER (WHERE total_cents IS NULL) AS null_totals
+FROM fct_orders
+WHERE order_date >= current_date - 14
+GROUP BY 1 ORDER BY 1;
+```
+
+The `null_totals` column jumps from 0 to several thousand two days ago. The upstream change was a source schema alteration that renamed a field, so the extraction started writing nulls — and because `sum()` ignores nulls rather than erroring, nothing failed loudly.
+
+That whole investigation took four queries because the lineage told you which four to run. Without it, you are grepping a repository for table names.
+
+Note also what this reveals: the real fix is not just correcting the extraction, it is adding a `not_null` test on `fct_orders.total_cents` so the pipeline fails instead of quietly producing a wrong number. Lineage points you at where the missing test belongs.
+
+## How lineage gets captured
+
+There are four common mechanisms, and mature setups use several.
+
+**Parsing SQL.** Read `CREATE TABLE AS`, `INSERT INTO ... SELECT` and view definitions, build an AST, and resolve which source columns feed which target columns. Libraries like `sqlglot` and `sqllineage` do this. It is the only way to get column-level lineage from arbitrary SQL, and it is imperfect — dynamic SQL, `SELECT *`, and stored procedures all degrade the result.
+
+**Reading query logs.** Warehouses record every query executed. Snowflake exposes `ACCESS_HISTORY`, BigQuery has `INFORMATION_SCHEMA.JOBS`, and PostgreSQL has `pg_stat_statements` plus `log_statement`. This captures what actually ran, including ad-hoc queries your DAG definition knows nothing about — which is both its strength and its noise problem.
+
+**Instrumenting the orchestrator.** Airflow, dbt, Dagster and Spark can emit lineage events as they run. This is what the OpenLineage standard formalises: a job reports its inputs, outputs and run metadata to a collector. It captures runtime facts — actual row counts, actual failures — that static parsing cannot.
+
+**Reading the transformation framework's metadata.** dbt writes a `manifest.json` describing every model and its `ref()` dependencies. It is accurate for table-level lineage and free, since it is a byproduct of a build you already run.
+
+A practical stack combines dbt's manifest for the modelled layer, warehouse query logs for the ad-hoc layer, and SQL parsing to add column-level detail on top.
+
+## Extracting lineage from a database yourself
+
+You do not need a platform to start. PostgreSQL's catalog records view dependencies, which gets you table-level lineage for the view layer in one query:
+
+```sql
+SELECT DISTINCT
+  source_ns.nspname || '.' || source_table.relname AS source,
+  dependent_ns.nspname || '.' || dependent_view.relname AS target
+FROM pg_depend d
+JOIN pg_rewrite r        ON r.oid = d.objid
+JOIN pg_class dependent_view ON dependent_view.oid = r.ev_class
+JOIN pg_class source_table   ON source_table.oid = d.refobjid
+JOIN pg_namespace dependent_ns ON dependent_ns.oid = dependent_view.relnamespace
+JOIN pg_namespace source_ns    ON source_ns.oid = source_table.relnamespace
+WHERE d.classid = 'pg_rewrite'::regclass
+  AND d.refclassid = 'pg_class'::regclass
+  AND dependent_view.oid <> source_table.oid
+  AND source_ns.nspname NOT IN ('pg_catalog', 'information_schema')
+ORDER BY 1, 2;
+```
+
+Walk that edge list recursively to get full upstream or downstream closure:
+
+```sql
+WITH RECURSIVE deps AS (
+  SELECT 'public.fct_orders'::text AS node, 0 AS depth
+  UNION ALL
+  SELECT e.target, d.depth + 1
+  FROM deps d
+  JOIN lineage_edges e ON e.source = d.node
+  WHERE d.depth < 10
+)
+SELECT DISTINCT node, depth FROM deps ORDER BY depth, node;
+```
+
+For column-level detail, `sqlglot` gets you a long way in a few lines of Python:
+
+```python
+from sqlglot.lineage import lineage
+
+sql = """
+SELECT u.id AS customer_id,
+       SUM(o.total_cents) AS lifetime_value_cents
+FROM raw_users u
+LEFT JOIN fct_orders o ON o.customer_id = u.id
+GROUP BY u.id
+"""
+
+node = lineage("lifetime_value_cents", sql, dialect="postgres")
+for n in node.walk():
+    print(n.name, "<-", n.source_name)
+```
+
+Exploring these relationships interactively — clicking through a schema, following foreign keys, seeing which views reference which tables — is faster in a client that renders the structure visually. [Chat2DB](https://chat2db.ai/download) is a free AI-powered database client that generates ER diagrams from a live connection and will explain what a long SQL model is doing in plain language, which is a useful first pass before you formalise lineage in a dedicated tool. There is a browser version at [app.chat2db.ai](https://app.chat2db.ai).
+
+## Why lineage matters
+
+**Incident response.** The 9am revenue question goes from a half-day investigation to four queries.
+
+**Impact analysis before changes.** "What breaks if I drop this column?" is answerable in seconds instead of by deploying and finding out.
+
+**Regulatory compliance.** GDPR's right to erasure requires knowing every place a person's data landed. BCBS 239 and SOX require demonstrating that a reported figure traces to an authoritative source. Both are lineage questions, and both are effectively unanswerable without it.
+
+**Trust in numbers.** When a stakeholder asks "where does this come from?", showing the path is the difference between a number people act on and a number people argue about.
+
+**Cost control and deprecation.** Downstream lineage identifies the tables nothing reads, which is where warehouse spend quietly accumulates. It also tells you when it is genuinely safe to delete something.
+
+## Where lineage goes wrong
+
+- **Stale documentation lineage.** A wiki page diagram is wrong within a month. Lineage has to be generated from the system, not maintained by hand.
+- **`SELECT *` everywhere.** Column-level lineage cannot resolve a star expansion without knowing the schema at the time the query ran, and it silently changes meaning when the source changes.
+- **Dynamic SQL and stored procedures.** Query text assembled at runtime is opaque to static parsing; you need runtime capture to see it.
+- **Lineage that stops at the warehouse edge.** If the graph ends before the BI layer, you cannot answer "which dashboard is affected", which is usually the actual question.
+- **Capturing lineage nobody looks at.** A lineage graph that is not wired into your alerting or your PR checks is a museum piece. The value is in the moment someone is about to drop a column.
+
+## Getting started
+
+You do not need a platform decision to begin. In order:
+
+1. **Generate table-level lineage from what you already have** — dbt's manifest, or the `pg_depend` query above. One afternoon.
+2. **Wire downstream impact into code review.** When a PR changes a model, post the list of downstream consumers as a comment. This alone prevents most breakage.
+3. **Add column-level lineage for the models that feed reported metrics.** Not everything — the twenty models finance and the board actually look at.
+4. **Capture runtime lineage** with OpenLineage once your orchestrator has more than a handful of jobs, so you see what actually ran rather than what was supposed to.
+5. **Only then evaluate a catalog platform**, with a concrete list of the questions you already know you need answered.
+
+Lineage is not a documentation project. It is the debugging tool you wish you had the last time a number was wrong, and the safety net that stops the next schema change from being an incident.

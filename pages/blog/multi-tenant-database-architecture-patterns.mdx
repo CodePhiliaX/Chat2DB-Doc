@@ -1,0 +1,286 @@
+---
+title: "Multi-Tenant Database Architecture: 3 Patterns"
+description: "Compare the three multi-tenant database patterns: shared table, schema per tenant and database per tenant, with SQL examples, migration costs and how to pick."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 8, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# Multi-Tenant Database Architecture: 3 Patterns
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 8, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+Every B2B SaaS product eventually reaches the same fork in the road: how do you keep one customer's data away from another's? The answer determines your migration story, your backup strategy, your per-customer cost, and how bad a single bug can get. Choose badly and you find out in year three, when moving is expensive.
+
+There are three durable answers — shared table with a tenant column, schema per tenant, and database per tenant — plus a hybrid that most large products converge on. This article compares them on the dimensions that actually decide the outcome, with working PostgreSQL for each.
+
+## The three patterns at a glance
+
+| Dimension | Shared table | Schema per tenant | Database per tenant |
+|---|---|---|---|
+| Isolation strength | Logical (policy or app code) | Logical (search_path + grants) | Physical |
+| Tenants per node | 100,000+ | ~500–2,000 | ~10–100 |
+| Cost per small tenant | Very low | Low | High |
+| Schema migration cost | One statement | N statements | N statements, N connections |
+| Noisy-neighbour blast radius | Whole cluster | Whole cluster | One tenant |
+| Per-tenant restore | Hard | Moderate | Trivial |
+| Per-tenant custom fields | Awkward | Natural | Natural |
+| Cross-tenant analytics | Trivial | Moderate (UNION) | Hard (ETL) |
+| Connection pool efficiency | Excellent | Good | Poor |
+
+## Pattern 1: shared table with a tenant column
+
+Every row in every table carries a `tenant_id`. One set of tables serves everyone.
+
+```sql
+CREATE TABLE tenants (
+  id       uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name     text NOT NULL,
+  plan     text NOT NULL DEFAULT 'free',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE projects (
+  id         bigserial PRIMARY KEY,
+  tenant_id  uuid NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+  name       text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE tasks (
+  id         bigserial PRIMARY KEY,
+  tenant_id  uuid NOT NULL REFERENCES tenants (id) ON DELETE CASCADE,
+  project_id bigint NOT NULL,
+  title      text NOT NULL,
+  done       boolean NOT NULL DEFAULT false,
+  -- Composite FK keeps a task from pointing at another tenant's project
+  FOREIGN KEY (tenant_id, project_id) REFERENCES projects (tenant_id, id)
+);
+
+-- Required for the composite FK above
+ALTER TABLE projects ADD CONSTRAINT projects_tenant_id_uk UNIQUE (tenant_id, id);
+
+CREATE INDEX tasks_tenant_project_idx ON tasks (tenant_id, project_id);
+CREATE INDEX projects_tenant_idx ON projects (tenant_id);
+```
+
+That composite foreign key is the detail most teams miss. Without it, a bug can attach tenant A's task to tenant B's project, and referential integrity will happily allow it. Enforcing the tenant in the FK makes cross-tenant references structurally impossible rather than merely unlikely.
+
+**Isolation.** Do not rely on the application remembering `WHERE tenant_id = ?`. Use row level security so the database enforces it:
+
+```sql
+ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks    ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation ON projects
+  FOR ALL TO app_user
+  USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
+
+CREATE POLICY tenant_isolation ON tasks
+  FOR ALL TO app_user
+  USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
+```
+
+The application sets the tenant once per request, inside the transaction:
+
+```sql
+BEGIN;
+SET LOCAL app.tenant_id = '3f2b...';
+SELECT * FROM tasks WHERE done = false;   -- filtered automatically
+COMMIT;
+```
+
+`SET LOCAL` rather than `SET` is non-negotiable behind a connection pooler. A plain `SET` persists on the physical connection and will eventually serve tenant A's data to tenant B's request — the single worst bug this architecture can produce.
+
+**Where it wins.** Cost, above all. Ten thousand free-tier tenants occupy one table and one connection pool. Schema migrations are a single `ALTER TABLE`. Cross-tenant analytics — "how many tasks were created last week across all customers?" — is one query.
+
+**Where it hurts.** Every index carries `tenant_id` at the front, widening them. A single large tenant can dominate table statistics, giving the planner bad estimates for everyone else. Per-tenant restore means extracting rows from a full-cluster backup, which is genuinely painful under time pressure. And "delete this customer's data" is a cascade across dozens of tables that you must get exactly right for GDPR purposes.
+
+## Pattern 2: schema per tenant
+
+One database, one PostgreSQL schema per tenant, identical table definitions inside each.
+
+```sql
+-- Provision a new tenant
+CREATE SCHEMA tenant_acme;
+
+CREATE TABLE tenant_acme.projects (
+  id bigserial PRIMARY KEY,
+  name text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE tenant_acme.tasks (
+  id bigserial PRIMARY KEY,
+  project_id bigint NOT NULL REFERENCES tenant_acme.projects (id),
+  title text NOT NULL,
+  done boolean NOT NULL DEFAULT false
+);
+```
+
+Provisioning by hand does not scale. Keep a template schema and clone it:
+
+```sql
+CREATE OR REPLACE FUNCTION provision_tenant(tenant_slug text)
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  target text := format('tenant_%s', tenant_slug);
+  obj    record;
+BEGIN
+  EXECUTE format('CREATE SCHEMA %I', target);
+
+  FOR obj IN
+    SELECT tablename FROM pg_tables WHERE schemaname = 'tenant_template'
+  LOOP
+    EXECUTE format(
+      'CREATE TABLE %I.%I (LIKE tenant_template.%I INCLUDING ALL)',
+      target, obj.tablename, obj.tablename
+    );
+  END LOOP;
+
+  EXECUTE format('GRANT USAGE ON SCHEMA %I TO app_user', target);
+  EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA %I TO app_user', target);
+END $$;
+
+SELECT provision_tenant('acme');
+```
+
+`INCLUDING ALL` carries over defaults, constraints, indexes and identity columns — but not foreign keys between tables, which you must recreate explicitly against the new schema.
+
+**Routing.** The application selects the tenant by setting `search_path`, again scoped to the transaction:
+
+```sql
+BEGIN;
+SET LOCAL search_path TO tenant_acme, public;
+SELECT * FROM tasks WHERE done = false;    -- resolves to tenant_acme.tasks
+COMMIT;
+```
+
+Queries stay tenant-agnostic, which is pleasant: your ORM models have no `tenant_id` at all.
+
+**Where it wins.** Per-tenant restore is a schema-level `pg_dump -n tenant_acme`, which is dramatically easier than row extraction. Per-tenant schema variation is natural — a customer who needs three custom columns gets them without affecting anyone else. Isolation is enforced by grants rather than by a predicate you might forget.
+
+**Where it hurts.** Migrations. A schema change is now N statements across N schemas, run in a loop, and a failure halfway through leaves you in a mixed state:
+
+```sql
+DO $$
+DECLARE s text;
+BEGIN
+  FOR s IN SELECT nspname FROM pg_namespace WHERE nspname LIKE 'tenant\_%'
+  LOOP
+    EXECUTE format('ALTER TABLE %I.tasks ADD COLUMN IF NOT EXISTS priority int DEFAULT 0', s);
+  END LOOP;
+END $$;
+```
+
+That loop is one transaction; on 2,000 schemas it will hold locks for a long time. In practice you batch it, track per-schema migration state, and accept that deploys are slower.
+
+The harder ceiling is catalog bloat. Each schema multiplies rows in `pg_class`, `pg_attribute` and `pg_index`. At a few hundred tables per tenant and a few thousand tenants you are into millions of catalog rows, and autovacuum on the catalogs, connection startup, and `pg_dump` all get noticeably slower. Most teams find the practical ceiling somewhere between 500 and 2,000 schemas.
+
+## Pattern 3: database per tenant
+
+Each tenant gets its own database — or its own cluster, at the extreme.
+
+```bash
+createdb tenant_acme
+psql -d tenant_acme -f schema.sql
+```
+
+**Where it wins.** Isolation is physical. A runaway query in tenant A cannot lock tenant B's tables. Backup and restore per tenant is a plain `pg_dump`/`pg_restore`. "Delete all of this customer's data" is `DROP DATABASE`, which is an unusually satisfying way to satisfy a deletion request. Per-tenant encryption keys, per-tenant residency (this customer's database lives in Frankfurt), and per-tenant version pinning all become possible.
+
+**Where it hurts.** Connections, mostly. Every PostgreSQL connection is a process with its own memory; a pool per database means you cannot share connections across tenants, and 500 tenants at 10 connections each is 5,000 backends — far past what a single cluster handles well. PgBouncer in transaction mode helps but must be configured per database, and its own connection limits become the constraint.
+
+Cross-tenant reporting requires either an ETL pipeline into a warehouse or `postgres_fdw` fan-out, both of which are real projects. And your migration tooling has to connect to N databases, which means N deploy failures to handle.
+
+This pattern is right for enterprise tiers with contractual isolation requirements, for regulated data, and for a small number of very large customers. It is wrong for a free tier.
+
+## The hybrid that most products end up with
+
+Successful SaaS products rarely stay pure. The common shape is:
+
+- **Free and self-serve tiers** live in a shared table with RLS. Cheap, easy to migrate, easy to analyse.
+- **Enterprise tiers** get their own database, often in a region they chose, sold as a feature.
+- **A routing layer** maps tenant → connection string, so the application does not care which pattern a given tenant uses.
+
+```sql
+-- Control-plane database, not a tenant database
+CREATE TABLE tenant_routing (
+  tenant_id      uuid PRIMARY KEY,
+  isolation_mode text NOT NULL CHECK (isolation_mode IN ('shared','schema','database')),
+  connection_ref text NOT NULL,   -- secret manager key, never a raw DSN
+  schema_name    text,
+  region         text NOT NULL DEFAULT 'us-east-1'
+);
+```
+
+The important design decision is to build that indirection *before* you need it. Retrofitting a routing layer onto code that assumes one connection is a multi-quarter project; adding it on day one costs a few hours.
+
+## Choosing: five questions that actually decide it
+
+**How many tenants, and what shape?** Ten thousand small tenants rules out database-per-tenant on cost alone. Fifty large enterprise tenants makes it entirely reasonable.
+
+**What does your worst-case compliance requirement look like?** If a contract says "our data is physically separated", you need pattern 3 for at least that customer. If "logically separated with audited access controls" suffices, RLS satisfies most auditors.
+
+**How often does the schema change?** A product shipping migrations weekly suffers badly under schema-per-tenant. One shipping quarterly barely notices.
+
+**Do you need cross-tenant analytics in the product itself?** Benchmarking features — "you are in the top 20% of teams by task completion" — are trivial in pattern 1 and require a warehouse in pattern 3.
+
+**How likely is a single tenant to become 90% of your data?** It happens more often than people expect. In a shared table, that tenant skews planner statistics for everyone; you will end up needing per-tenant partitioning or moving them out. Plan the escape hatch.
+
+## Migrating between patterns
+
+You will do this at least once. Two paths are meaningfully easier than the others.
+
+**Shared table → database per tenant** is the common "promote to enterprise" move, and it is straightforward because the tenant's rows are already identifiable:
+
+```bash
+# Extract one tenant's rows using the RLS session variable
+psql -d shared -c "SET app.tenant_id = '3f2b...'" \
+     -c "\copy (SELECT * FROM tasks) TO 'tasks.csv' CSV HEADER"
+```
+
+Better, use logical replication with a row filter (PostgreSQL 15 and later) so the cutover has near-zero downtime:
+
+```sql
+-- On the source
+CREATE PUBLICATION tenant_acme_pub FOR TABLE
+  projects WHERE (tenant_id = '3f2b...'),
+  tasks    WHERE (tenant_id = '3f2b...');
+
+-- On the destination
+CREATE SUBSCRIPTION tenant_acme_sub
+  CONNECTION 'host=source dbname=shared'
+  PUBLICATION tenant_acme_pub;
+```
+
+Wait for the subscription to catch up, freeze writes for a few seconds, verify counts, flip the routing row, done.
+
+**Schema per tenant → database per tenant** is `pg_dump -n tenant_acme | psql -d tenant_acme`, then a routing update.
+
+The migration nobody enjoys is **database per tenant → shared table**, because you must add `tenant_id` to every row, reconcile ID collisions across formerly independent sequences, and merge schemas that have drifted apart. If you are unsure, start with the shared table: moving out is easy, moving in is not.
+
+Inspecting several tenant databases side by side during a migration — comparing schemas, checking row counts, verifying that a cutover copied everything — is exactly the kind of work that goes faster in a client built for multiple simultaneous connections. [Chat2DB](https://chat2db.ai/download) keeps parallel connections open, diffs schemas between them, and generates the migration SQL from a natural-language description; there is a browser version at [app.chat2db.ai](https://app.chat2db.ai) if you only need it occasionally.
+
+## Mistakes worth avoiding
+
+- **Relying on application code for isolation.** One forgotten `WHERE` clause in one endpoint is a data breach. Push the rule into RLS or into schema grants where it cannot be forgotten.
+- **Using `SET` instead of `SET LOCAL`** behind a connection pooler. The tenant variable persists on the physical connection and leaks to the next request.
+- **Skipping the composite foreign key** in the shared-table pattern, allowing cross-tenant references that no constraint catches.
+- **Sequential integer tenant IDs in URLs.** Combined with a missing check, incrementing an ID is the classic enumeration attack. Use UUIDs.
+- **Assuming schema-per-tenant scales indefinitely.** Catalog bloat is a real wall, and you hit it abruptly.
+- **No routing indirection.** Hard-coding one connection makes every future move a rewrite.
+- **Forgetting the deletion path.** Whatever pattern you choose, write and test "delete everything for tenant X" on day one. It is a legal requirement in most jurisdictions and it is much harder to add later.
+
+## Summary
+
+Start with a shared table and row level security unless you have a specific reason not to — it is the cheapest, the easiest to migrate out of, and the easiest to operate. Reach for schema-per-tenant when customers need genuine schema variation and you have fewer than a thousand of them. Reserve database-per-tenant for enterprise customers who are paying for the isolation, and route to it through an indirection layer you built before you needed it.
+
+Whatever you pick, enforce the boundary in the database rather than in application code, index for the tenant column from the start, and test the per-tenant deletion path before your first customer asks for it.
