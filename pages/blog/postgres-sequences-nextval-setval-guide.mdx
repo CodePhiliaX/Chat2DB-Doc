@@ -1,0 +1,421 @@
+---
+title: "Postgres Sequence Guide: CREATE, nextval, setval"
+description: "PostgreSQL sequence reference: CREATE SEQUENCE options, nextval, currval, setval and is_called, gaps, CACHE, permissions, and fixing duplicate key errors."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 9, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# Postgres Sequence Guide: CREATE, nextval, setval
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 9, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+A PostgreSQL sequence is a small, special-purpose relation that hands out numbers. Every `SERIAL` column, every `GENERATED AS IDENTITY` column, and every `DEFAULT nextval('...')` expression is backed by one. Most developers only meet sequences when something goes wrong: a duplicate key error after an import, a gap in the id column that a product manager notices, or a `reached maximum value` error at 2 a.m. This guide is a complete reference so those situations are boring instead of surprising.
+
+## What a sequence object is
+
+A sequence is a database object with its own name, owner and privileges. Internally it is a one-row table that stores the last value handed out, a counter of pre-logged values (`log_cnt`) and a flag called `is_called`. You can read that row directly:
+
+```sql
+CREATE SEQUENCE demo_seq;
+
+SELECT * FROM demo_seq;
+```
+
+```
+ last_value | log_cnt | is_called
+------------+---------+-----------
+          1 |       0 | f
+```
+
+A brand-new sequence reports `last_value = 1` with `is_called = false`. That combination means "the next call will return 1, not 2". The `is_called` flag is the single most misunderstood part of sequences, and we will come back to it in the `setval` section.
+
+### How SERIAL, IDENTITY and DEFAULT nextval() relate to sequences
+
+All three column styles use a sequence; they differ only in how the sequence is created and owned.
+
+```sql
+-- 1. SERIAL: shorthand that creates orders_id_seq, sets DEFAULT nextval, and marks OWNED BY
+CREATE TABLE orders (id serial PRIMARY KEY, total numeric);
+
+-- 2. IDENTITY (PostgreSQL 10+): the sequence is internal to the column
+CREATE TABLE invoices (id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, total numeric);
+
+-- 3. Explicit sequence with a DEFAULT expression
+CREATE SEQUENCE ticket_id_seq AS bigint;
+CREATE TABLE tickets (id bigint PRIMARY KEY DEFAULT nextval('ticket_id_seq'), subject text);
+```
+
+`SERIAL` is just macro expansion: PostgreSQL creates an `integer` sequence, adds the default, and runs `ALTER SEQUENCE ... OWNED BY orders.id` so that dropping the column drops the sequence. `IDENTITY` does the same but hides the sequence behind the column and is the SQL-standard form. The trade-offs between the two are covered in [serial vs identity](/blog/postgres-serial-vs-identity-column); this article focuses on the sequence itself, which behaves identically underneath.
+
+## CREATE SEQUENCE options
+
+The full form looks like this:
+
+```sql
+CREATE SEQUENCE IF NOT EXISTS order_number_seq
+    AS bigint
+    INCREMENT BY 1
+    MINVALUE 1000
+    MAXVALUE 9223372036854775807
+    START WITH 1000
+    CACHE 1
+    NO CYCLE
+    OWNED BY NONE;
+```
+
+| Option | Default | What it does |
+|---|---|---|
+| `AS type` | `bigint` | `smallint`, `integer` or `bigint`. Sets the natural min/max. PostgreSQL 10+. |
+| `INCREMENT BY n` | `1` | Step size. Negative values make a descending sequence. |
+| `MINVALUE` / `NO MINVALUE` | `1` for ascending, type minimum for descending | Lower bound. |
+| `MAXVALUE` / `NO MAXVALUE` | type maximum for ascending, `-1` for descending | Upper bound. |
+| `START WITH n` | `MINVALUE` (ascending) or `MAXVALUE` (descending) | First value returned. |
+| `CACHE n` | `1` | How many values each session preallocates. See the performance section. |
+| `CYCLE` / `NO CYCLE` | `NO CYCLE` | Wrap around at the bound instead of raising an error. |
+| `OWNED BY table.column` | `NONE` | Tie the sequence's lifetime to a column. |
+
+Two of these deserve a comment. `CYCLE` is almost never what you want for a primary key, because the wrapped values collide with rows that already exist. It is useful for things like round-robin routing keys. `OWNED BY` does not change how the sequence works; it only means `DROP TABLE` or `DROP COLUMN` takes the sequence with it.
+
+A descending sequence is a normal use case for things like countdown ticket numbers:
+
+```sql
+CREATE SEQUENCE countdown_seq AS integer INCREMENT BY -1 MAXVALUE 100 START WITH 100;
+SELECT nextval('countdown_seq'), nextval('countdown_seq');
+```
+
+```
+ nextval | nextval
+---------+---------
+     100 |      99
+```
+
+## nextval, currval, lastval and setval
+
+These four functions are the entire API surface.
+
+### nextval
+
+`nextval(regclass)` advances the sequence and returns the new value. The argument is a `regclass`, so you can pass a string literal and PostgreSQL resolves it using `search_path`, or you can qualify it:
+
+```sql
+SELECT nextval('order_number_seq');
+SELECT nextval('billing.order_number_seq');
+SELECT nextval('"MixedCaseSeq"');   -- quoted identifiers keep their case
+```
+
+```
+ nextval
+---------
+    1000
+```
+
+One subtle point: when you write `nextval('order_number_seq')` inside a column `DEFAULT` or a function body, the literal is cast to `regclass` at definition time and stored as the sequence's OID. Renaming the sequence afterwards does not break the default. If you want late binding, for example a sequence name assembled at run time, cast to `text` explicitly: `nextval('order_number_seq'::text)`.
+
+### currval
+
+`currval(regclass)` returns the value most recently obtained by `nextval` for that sequence *in the current session*. It does not look at the sequence's shared state, so it is safe under concurrency and it is exactly what you want after an insert that used a default:
+
+```sql
+INSERT INTO tickets (subject) VALUES ('Printer on fire');
+SELECT currval('ticket_id_seq');
+```
+
+If the session has never called `nextval` on that sequence you get an error rather than a stale number:
+
+```
+ERROR:  currval of sequence "ticket_id_seq" is not yet defined in this session
+```
+
+In practice `INSERT ... RETURNING id` is cleaner than `currval`, but `currval` is still useful in trigger code and in multi-statement scripts.
+
+### lastval
+
+`lastval()` is `currval` without the argument: it returns the last value produced by `nextval` for *any* sequence in this session. It is convenient in ad-hoc scripts and dangerous in triggers, because a trigger that inserts into another table with its own serial column silently changes what `lastval()` refers to. Prefer `currval('specific_seq')` in anything that ships.
+
+### setval and the is_called flag
+
+`setval` writes the sequence's state. It has two forms:
+
+```sql
+SELECT setval('ticket_id_seq', 500);          -- is_called = true
+SELECT setval('ticket_id_seq', 500, false);   -- is_called = false
+```
+
+The third argument controls `is_called`:
+
+| Call | Stored `last_value` | Stored `is_called` | Next `nextval` returns |
+|---|---|---|---|
+| `setval(s, 500)` | 500 | true | 501 |
+| `setval(s, 500, true)` | 500 | true | 501 |
+| `setval(s, 500, false)` | 500 | false | 500 |
+
+Read it as: "the value 500 has (true) or has not (false) already been handed out". The two-argument form is what you want when syncing a sequence with `max(id)` of a table. The `false` form is what you want when you know the exact next value you need, for example when re-seeding a test database to start at 1:
+
+```sql
+SELECT setval('ticket_id_seq', 1, false);
+SELECT nextval('ticket_id_seq');   -- 1, not 2
+```
+
+The classic mistake is using `setval(seq, 1)` to "reset to the beginning" and then wondering why ids start at 2. A second classic mistake is calling `setval` with a value below `MINVALUE` or above `MAXVALUE`, which raises `setval: value 0 is out of bounds for sequence "ticket_id_seq" (1..9223372036854775807)`.
+
+`setval` also sets `currval` for the current session, so `currval` works immediately after it.
+
+## Why sequences leave gaps, and why that is fine
+
+Sequence operations are deliberately non-transactional. When `nextval` runs it updates the sequence relation immediately, outside your transaction's undo scope, so that other sessions can keep allocating without waiting for your commit. The consequence is that a value, once taken, is never given back. Gaps appear in three ordinary situations:
+
+1. **Rollback.** `BEGIN; INSERT ...; ROLLBACK;` consumes the id. The row disappears, the number does not return.
+2. **CACHE greater than 1.** Each session grabs a block of values. If session A takes 1-20, session B takes 21-40, and session A disconnects after using three of its values, 4-20 are gone forever. Values can also appear out of order across sessions.
+3. **Crash recovery.** For efficiency PostgreSQL writes a WAL record for 32 values at a time rather than for every call (this is what the `log_cnt` column tracks). After a crash the sequence restarts from the last logged point, which can be up to 32 values ahead of the last one actually used.
+
+You can observe the rollback behaviour directly:
+
+```sql
+BEGIN;
+SELECT nextval('demo_seq');   -- 1
+ROLLBACK;
+SELECT nextval('demo_seq');   -- 2
+```
+
+None of this is a bug. A sequence guarantees that values are unique and (within a session) increasing. It does not guarantee that they are contiguous. If a business requirement says "invoice numbers must have no gaps", a sequence is the wrong tool: use a counter row in a table updated with `UPDATE ... RETURNING` inside the same transaction, and accept that inserts on that table are serialised. That serialisation is exactly what sequences were designed to avoid.
+
+## Inspecting sequences
+
+There are several ways to look at a sequence, and they show different things.
+
+`\d` in psql describes the parameters:
+
+```
+\d ticket_id_seq
+                  Sequence "public.ticket_id_seq"
+  Type  | Start | Minimum |       Maximum       | Increment | Cycles? | Cache
+--------+-------+---------+---------------------+-----------+---------+-------
+ bigint |     1 |       1 | 9223372036854775807 |         1 | no      |     1
+Owned by: public.tickets.id
+```
+
+The `pg_sequences` view (PostgreSQL 10+) lists every sequence you can see, with the parameters and the current value in one place:
+
+```sql
+SELECT schemaname, sequencename, data_type, last_value, cache_size, cycle
+FROM pg_sequences
+WHERE schemaname = 'public';
+```
+
+```
+ schemaname |  sequencename  | data_type | last_value | cache_size | cycle
+------------+----------------+-----------+------------+------------+-------
+ public     | orders_id_seq  | integer   |            |          1 | f
+ public     | ticket_id_seq  | bigint    |          1 |          1 | f
+```
+
+`last_value` is `NULL` when the sequence has never been called or when you lack privileges on it. `information_schema.sequences` is the SQL-standard equivalent; it is portable but omits the current value.
+
+To go from a column to its sequence, use `pg_get_serial_sequence`. It works for `SERIAL` and `IDENTITY` columns alike:
+
+```sql
+SELECT pg_get_serial_sequence('invoices', 'id');
+```
+
+```
+ pg_get_serial_sequence
+-------------------------
+ public.invoices_id_seq
+```
+
+Note the quoting rule: the first argument is parsed as an identifier (so `'MyTable'` is folded to `mytable` unless you write `'"MyTable"'`), while the second argument is taken literally. And to read the value without touching the sequence:
+
+```sql
+SELECT pg_sequence_last_value('ticket_id_seq');
+```
+
+This returns `NULL` if `is_called` is false, which is why a fresh sequence reports `NULL` here even though `SELECT * FROM ticket_id_seq` shows `last_value = 1`.
+
+All of these are plain queries, so you can run them in any client. In Chat2DB (download at https://chat2db.ai/download or use the web version at https://app.chat2db.ai) the sequences also appear under the schema tree, which is handy when you are hunting for the one that belongs to a renamed table.
+
+## ALTER SEQUENCE
+
+Everything set at creation can be changed later:
+
+```sql
+ALTER SEQUENCE ticket_id_seq RESTART WITH 10000;         -- like setval(.., 10000, false)
+ALTER SEQUENCE ticket_id_seq INCREMENT BY 10 CACHE 50;
+ALTER SEQUENCE ticket_id_seq OWNED BY tickets.id;
+ALTER SEQUENCE ticket_id_seq OWNED BY NONE;
+ALTER SEQUENCE ticket_id_seq RENAME TO tickets_id_seq;
+ALTER SEQUENCE ticket_id_seq SET SCHEMA billing;
+ALTER SEQUENCE ticket_id_seq AS bigint;                  -- PostgreSQL 10+
+```
+
+`RESTART` without a value goes back to the `START WITH` value. `ALTER SEQUENCE` takes a lock that blocks concurrent `nextval` calls for the duration of the statement, and other sessions that already hold cached values keep using them until the cache is exhausted. Treat sequence changes as immediate and do not rely on rolling a transaction back to undo them.
+
+For identity columns, alter through the column rather than the hidden sequence:
+
+```sql
+ALTER TABLE invoices ALTER COLUMN id RESTART WITH 5000;
+ALTER TABLE invoices ALTER COLUMN id SET INCREMENT BY 2;
+```
+
+## Shared and per-tenant sequences
+
+Nothing ties a sequence to one table. A single sequence can feed several tables when you need ids that are unique across all of them, for example an `events` table and an `audit_log` table that must never collide:
+
+```sql
+CREATE SEQUENCE global_id_seq AS bigint;
+
+CREATE TABLE events    (id bigint PRIMARY KEY DEFAULT nextval('global_id_seq'), payload jsonb);
+CREATE TABLE audit_log (id bigint PRIMARY KEY DEFAULT nextval('global_id_seq'), action text);
+```
+
+Leave such a sequence `OWNED BY NONE` so dropping one table does not remove it from the other.
+
+Per-tenant numbering (each customer sees invoice numbers 1, 2, 3...) can be done with one sequence per tenant and a small function that builds the name:
+
+```sql
+CREATE OR REPLACE FUNCTION next_invoice_no(tenant_id int) RETURNS bigint
+LANGUAGE plpgsql AS $$
+BEGIN
+  RETURN nextval(format('invoice_seq_%s', tenant_id)::regclass);
+END;
+$$;
+```
+
+You create `invoice_seq_42` when tenant 42 signs up. This scales to thousands of sequences without trouble, but remember that gaps still occur; if the tenant's accountant demands gap-free numbers, use a counter row instead.
+
+## Sequences and replication
+
+On a streaming (physical) replica, sequences are replicated through WAL like everything else, but you cannot call `nextval` there because the replica is read-only. Because of the 32-value WAL pre-logging described earlier, a replica can show a `last_value` slightly ahead of the primary's actual consumption; after failover the sequence simply continues from that point and a small gap appears.
+
+Logical replication is different. In PostgreSQL 16 and earlier, publications and subscriptions copy table rows but do not copy sequence state at all: after a logical migration, every sequence on the subscriber still sits at its initial value. Newer major releases have been extending logical replication in this area, so check the release notes for your exact version rather than assuming. Until you have confirmed that, the safe procedure after a logical cutover is to run `setval` for each sequence based on `max(id)` of the subscribed tables, which is the same fix described in the troubleshooting section below.
+
+## Performance: CACHE for high-insert workloads
+
+Every `nextval` call with `CACHE 1` touches the shared sequence relation and takes a short lightweight lock. For most applications this is invisible. For a table taking many thousands of inserts per second from many connections, the sequence can become a measurable hot spot. `CACHE n` lets each session preallocate `n` values and hand them out locally without touching shared state:
+
+```sql
+ALTER SEQUENCE events_id_seq CACHE 100;
+```
+
+The price is the gap behaviour explained above, plus the fact that ids from different sessions interleave. If you rely on id order matching insert order (you should not, but people do), keep `CACHE 1` and use a timestamp column for ordering.
+
+## Permissions
+
+Sequences have three relevant privileges, and the mapping to functions is not obvious:
+
+| Privilege | Allows |
+|---|---|
+| `USAGE` | `nextval` and `currval` |
+| `SELECT` | `currval` and reading the sequence with `SELECT * FROM seq` |
+| `UPDATE` | `nextval` and `setval` |
+
+The practical rule: an application role that inserts rows needs `USAGE` on the sequence (owning `INSERT` on the table is not enough), and a migration role that resets sequences needs `UPDATE`.
+
+```sql
+GRANT USAGE ON SEQUENCE ticket_id_seq TO app_rw;
+GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO app_rw;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE ON SEQUENCES TO app_rw;
+GRANT UPDATE ON SEQUENCE ticket_id_seq TO migrator;
+```
+
+The symptom of a missing grant is:
+
+```
+ERROR:  permission denied for sequence ticket_id_seq
+```
+
+which often shows up only in production because developers run as the table owner locally.
+
+## Pitfalls
+
+### Exhausting an integer sequence
+
+A `SERIAL` column is `integer`, with a maximum of 2147483647. When the sequence reaches it, inserts fail:
+
+```
+ERROR:  nextval: reached maximum value of sequence "orders_id_seq" (2147483647)
+```
+
+Check how close you are before it happens:
+
+```sql
+SELECT sequencename, last_value, max_value,
+       round(100.0 * last_value / max_value, 2) AS pct_used
+FROM pg_sequences
+WHERE last_value IS NOT NULL
+ORDER BY pct_used DESC;
+```
+
+Migrating to `bigint` requires changing both the column and the sequence, and any foreign key columns that reference it:
+
+```sql
+BEGIN;
+ALTER TABLE order_items ALTER COLUMN order_id TYPE bigint;  -- FK columns first or together
+ALTER TABLE orders      ALTER COLUMN id       TYPE bigint;
+ALTER SEQUENCE orders_id_seq AS bigint;
+COMMIT;
+```
+
+`ALTER TABLE ... TYPE bigint` rewrites the table and holds an `ACCESS EXCLUSIVE` lock for the duration, so on a large table plan a maintenance window or use the add-column-backfill-swap pattern. `ALTER SEQUENCE ... AS bigint` also raises `MAXVALUE` automatically if it was still at the integer maximum. If you skip the sequence step, the column is wide but the sequence still stops at 2147483647.
+
+### Duplicate keys after restoring or importing data
+
+`pg_dump` includes `setval` calls, so a full restore leaves sequences in sync. `COPY`, CSV imports, ETL jobs and `INSERT ... SELECT` with explicit ids do not. The table then contains ids the sequence has not handed out yet, and the next default insert collides. The fix is one `setval` per table; the step-by-step version, including a loop that fixes every sequence in a database, is in [how to reset a sequence](/blog/postgres-reset-sequence).
+
+### setval with false on an empty table
+
+The one-liner people copy is `setval(seq, (SELECT max(id) FROM t))`. On an empty table `max(id)` is `NULL`, and `setval` with a `NULL` argument returns `NULL` and changes nothing, which is harmless. The dangerous variant is `setval(seq, coalesce(max(id), 0))`, which raises the out-of-bounds error for a sequence whose `MINVALUE` is 1. Use `coalesce(max(id) + 1, 1), false` instead, which handles both cases:
+
+```sql
+SELECT setval('tickets_id_seq', coalesce((SELECT max(id) + 1 FROM tickets), 1), false);
+```
+
+## Troubleshooting: duplicate key value violates unique constraint
+
+This is the error that brings most people to a page about sequences:
+
+```
+ERROR:  duplicate key value violates unique constraint "tickets_pkey"
+DETAIL:  Key (id)=(1043) already exists.
+```
+
+Work through it in order.
+
+**Step 1: confirm it is the sequence and not the application.** Compare the sequence with the table:
+
+```sql
+SELECT (SELECT max(id) FROM tickets)                       AS table_max,
+       (SELECT last_value FROM pg_sequences
+         WHERE sequencename = 'tickets_id_seq')            AS seq_last;
+```
+
+If `seq_last` is less than `table_max`, the sequence is behind and this guide applies. If it is greater or equal, the application is supplying explicit ids that collide; look at the insert statements, not the sequence.
+
+**Step 2: find the right sequence.** Do not guess from the naming convention; renamed tables keep their original sequence names:
+
+```sql
+SELECT pg_get_serial_sequence('tickets', 'id');
+```
+
+**Step 3: resync.** Use the two-argument form so the next value is `max + 1`:
+
+```sql
+SELECT setval(pg_get_serial_sequence('tickets', 'id'), (SELECT max(id) FROM tickets));
+```
+
+**Step 4: find the cause.** The sequence did not fall behind on its own. Look for a recent import, a script that inserted explicit ids, a logical replication cutover, or a restore from a partial dump. If it recurs, that job needs a `setval` at the end.
+
+**Step 5: for identity columns**, `setval` on the underlying sequence works exactly the same way, because `pg_get_serial_sequence` returns the identity sequence too. The `ALTER TABLE ... ALTER COLUMN id RESTART WITH n` form is more readable but takes a constant, not a subquery, so in a script you either compute `n` first or stay with `setval`:
+
+```sql
+SELECT setval(pg_get_serial_sequence('invoices', 'id'),
+              coalesce((SELECT max(id) + 1 FROM invoices), 1), false);
+```
+
+## Summary
+
+A sequence is a tiny, fast, non-transactional counter. `nextval` takes a value and never gives it back; `currval` remembers what this session took; `setval` rewrites the state, and its third argument decides whether the stored value counts as already used. Gaps are normal. Give application roles `USAGE`, watch integer sequences before they hit 2147483647, and after any import that supplies its own ids, resync with `setval`. With those rules in place, sequences are one of the least surprising parts of PostgreSQL.

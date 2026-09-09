@@ -1,0 +1,299 @@
+---
+title: "Postgres vs MySQL vs SQLite: Which One to Use"
+description: "A decision framework for postgres vs mysql vs sqlite: architecture, concurrency, type systems, SQL feature coverage, extensions and migration paths."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 9, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# Postgres vs MySQL vs SQLite: Which One to Use
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 9, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+The postgres vs mysql vs sqlite question is usually answered with a feature checklist, which is the wrong tool. All three speak SQL, all three are ACID, and all three are mature enough that "is it reliable" is not the deciding question. What actually decides it is a handful of structural properties: where the engine runs, how it handles concurrent writers, how strictly it types your data, and what you will need from it two years from now.
+
+This article is a decision framework built around those properties. It shows the same schema and the same upsert in all three dialects, gives a feature coverage table you can check against your requirements, and ends with migration paths for the common case where you outgrow the first choice.
+
+## Architecture: embedded library vs database server
+
+SQLite is not a server. It is a C library linked into your process that reads and writes a single file. There is no network protocol, no authentication, no daemon to install, and "connecting" means opening a file handle. Every process that opens the file talks to the OS file locking layer, not to each other.
+
+MySQL and PostgreSQL are client-server systems. A daemon owns the data directory, clients connect over TCP or a Unix socket, and all coordination happens inside the server. The two differ in process model: PostgreSQL forks one backend process per connection, MySQL runs one thread per connection inside a single process. This is why PostgreSQL connections are comparatively expensive and why connection poolers such as PgBouncer are standard equipment in PostgreSQL deployments, while MySQL tolerates a few thousand mostly-idle connections more gracefully.
+
+The practical consequence: SQLite fits anywhere a file fits, but is bound to one machine. MySQL and PostgreSQL require operations work, but can be shared by many application servers, replicated, and moved independently of the application.
+
+## Concurrency model
+
+This is where the three diverge most sharply, and it is the property most likely to force a migration.
+
+### SQLite: single writer, WAL readers
+
+SQLite serializes writers at the database level. One transaction may write at a time; a second writer waits for `busy_timeout` and then fails with `SQLITE_BUSY`. In the default rollback journal mode, a writer also blocks readers. Switching to write-ahead logging changes that:
+
+```sql
+PRAGMA journal_mode = WAL;
+PRAGMA busy_timeout = 5000;
+PRAGMA synchronous = NORMAL;
+```
+
+With WAL, readers never block the writer and the writer never blocks readers, but there is still exactly one writer. For a web application whose write rate is a few dozen transactions per second, this is completely fine. For a queue with fifty workers all inserting, it is a wall. Pitfall: WAL mode does not work over network filesystems such as NFS, because it relies on shared memory between processes on the same host.
+
+### MySQL: InnoDB row locks and undo logs
+
+InnoDB provides row-level locking and MVCC through undo logs. Readers under `REPEATABLE READ` (the default) see a consistent snapshot, and writers lock only the rows they touch, plus gap locks on the ranges they scan under the default isolation level. Old row versions live in the undo log and are purged by a background thread once no transaction needs them. The main operational trap is long-running transactions holding back purge, which bloats undo space and slows things down, and gap-lock deadlocks in insert-heavy workloads that many teams resolve by switching to `READ COMMITTED`.
+
+### PostgreSQL: MVCC with vacuum
+
+PostgreSQL also uses MVCC, but stores old row versions in the table itself rather than in a separate undo area. Updating a row writes a new tuple and marks the old one dead. Dead tuples are reclaimed by `VACUUM`, which autovacuum runs for you. Readers never block writers and writers never block readers, the same as InnoDB, but the cost model differs: update-heavy tables grow until vacuum catches up, and a neglected vacuum can lead to bloat and, in extreme cases, transaction ID wraparound protection kicking in. You will spend some time tuning autovacuum on busy PostgreSQL systems; you will spend the equivalent time on undo and purge lag on busy MySQL systems.
+
+## Type system
+
+### SQLite: type affinity, or STRICT
+
+Classic SQLite does not enforce column types. A column declared `INTEGER` has integer affinity, meaning SQLite will try to convert what you insert, but it will happily store the string `'hello'` there if conversion fails. This surprises people coming from any other database.
+
+```sql
+CREATE TABLE loose (n INTEGER);
+INSERT INTO loose VALUES ('hello');   -- succeeds
+SELECT typeof(n) FROM loose;          -- text
+```
+
+SQLite 3.37 added `STRICT` tables, which restrict columns to `INT`, `INTEGER`, `REAL`, `TEXT`, `BLOB`, or `ANY` and reject mismatched values. Use `STRICT` on every new table unless you have a reason not to. There is still no native date, boolean, decimal, or JSON column type; dates are stored as text, integers, or reals by convention, and JSON is text queried with the built-in JSON functions.
+
+### MySQL: strict mode
+
+MySQL 8 runs with `sql_mode` including `STRICT_TRANS_TABLES` by default, so out-of-range values and truncations are errors rather than silent adjustments. Older servers and some hosting images disable strict mode, and then `INSERT` of a 300-character string into a `VARCHAR(255)` silently truncates. Always check:
+
+```sql
+SELECT @@sql_mode;
+```
+
+MySQL has a solid set of scalar types (`DECIMAL`, `DATETIME`, `TIMESTAMP`, `ENUM`, `SET`, spatial types, `JSON`) but no arrays, no range types, and `BOOLEAN` is an alias for `TINYINT(1)`.
+
+### PostgreSQL: a rich, extensible type system
+
+PostgreSQL treats types as first-class objects. Arrays of any type, `JSONB` with GIN indexing, range and multirange types, `INET`, `UUID`, `INTERVAL`, composite types, enums, domains, and user-defined types via extensions are all standard. This matters when your data is not flat:
+
+```sql
+CREATE TABLE bookings (
+  id      BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  room_id INTEGER NOT NULL,
+  during  TSTZRANGE NOT NULL,
+  EXCLUDE USING gist (room_id WITH =, during WITH &&)
+);
+```
+
+That exclusion constraint prevents overlapping bookings for the same room at the database level. Reproducing it in MySQL or SQLite requires application logic or triggers.
+
+## The same schema in all three dialects
+
+Here is a products table with a unique SKU, a checked price, tags, semi-structured attributes, and a creation timestamp.
+
+PostgreSQL:
+
+```sql
+CREATE TABLE products (
+  id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  sku         TEXT NOT NULL UNIQUE,
+  name        TEXT NOT NULL,
+  price_cents INTEGER NOT NULL CHECK (price_cents >= 0),
+  tags        TEXT[] NOT NULL DEFAULT '{}',
+  attributes  JSONB NOT NULL DEFAULT '{}',
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX products_attributes_idx ON products USING gin (attributes);
+```
+
+MySQL 8:
+
+```sql
+CREATE TABLE products (
+  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  sku         VARCHAR(64) NOT NULL UNIQUE,
+  name        VARCHAR(255) NOT NULL,
+  price_cents INT NOT NULL CHECK (price_cents >= 0),
+  tags        JSON NOT NULL DEFAULT (JSON_ARRAY()),
+  attributes  JSON NOT NULL DEFAULT (JSON_OBJECT()),
+  created_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+```
+
+Notes: `CHECK` constraints are enforced from MySQL 8.0.16 (earlier versions parse and ignore them), and expression defaults on `JSON` columns need 8.0.13 or later. `TEXT` columns cannot be fully indexed without a prefix length, which is why the SKU is a `VARCHAR`.
+
+SQLite:
+
+```sql
+CREATE TABLE products (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  sku         TEXT NOT NULL UNIQUE,
+  name        TEXT NOT NULL,
+  price_cents INTEGER NOT NULL CHECK (price_cents >= 0),
+  tags        TEXT NOT NULL DEFAULT '[]',
+  attributes  TEXT NOT NULL DEFAULT '{}',
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+) STRICT;
+```
+
+Tags and attributes are JSON text, queried with `json_extract` and `json_each`. `AUTOINCREMENT` is optional; plain `INTEGER PRIMARY KEY` is faster and only differs in that it may reuse ids of deleted rows.
+
+## The same upsert in all three dialects
+
+PostgreSQL:
+
+```sql
+INSERT INTO products (sku, name, price_cents)
+VALUES ('A-100', 'Anvil', 2599)
+ON CONFLICT (sku) DO UPDATE
+SET name        = EXCLUDED.name,
+    price_cents = EXCLUDED.price_cents
+RETURNING id, created_at;
+```
+
+SQLite (upsert since 3.24, `RETURNING` since 3.35):
+
+```sql
+INSERT INTO products (sku, name, price_cents)
+VALUES ('A-100', 'Anvil', 2599)
+ON CONFLICT (sku) DO UPDATE
+SET name        = excluded.name,
+    price_cents = excluded.price_cents
+RETURNING id, created_at;
+```
+
+The syntax is nearly identical, with one SQLite pitfall: when the source is a `SELECT` rather than `VALUES`, you must add `WHERE true` before `ON CONFLICT` to avoid a parsing ambiguity.
+
+MySQL 8:
+
+```sql
+INSERT INTO products (sku, name, price_cents, tags, attributes)
+VALUES ('A-100', 'Anvil', 2599, JSON_ARRAY(), JSON_OBJECT()) AS new
+ON DUPLICATE KEY UPDATE
+  name        = new.name,
+  price_cents = new.price_cents;
+SELECT LAST_INSERT_ID();
+```
+
+The `AS new` row alias requires MySQL 8.0.19; on older servers use `VALUES(name)` instead. Two behaviours to know: `ON DUPLICATE KEY UPDATE` fires on any unique key collision, not one you name, and each attempt that collides still consumes an auto-increment value, so id gaps appear. There is no `RETURNING`; `LAST_INSERT_ID()` returns the id only when a new row was inserted (or the updated row's id if you write `id = LAST_INSERT_ID(id)` in the update list).
+
+## SQL feature coverage
+
+| Feature | SQLite 3 | MySQL 8 | PostgreSQL 15+ |
+|---|---|---|---|
+| CTEs and recursive CTEs | yes | yes | yes |
+| Window functions | yes (3.25+) | yes | yes |
+| FULL OUTER JOIN | yes (3.39+) | no, emulate with UNION | yes |
+| LATERAL joins | no | yes (8.0.14+) | yes |
+| `RETURNING` | yes (3.35+) | no | yes |
+| Upsert syntax | `ON CONFLICT` | `ON DUPLICATE KEY UPDATE` | `ON CONFLICT` |
+| `MERGE` | no | no | yes (15+) |
+| Materialized views | no | no | yes |
+| Partial indexes | yes | no | yes |
+| Expression indexes | yes | yes (8.0.13+) | yes |
+| Stored procedures | no | yes | yes |
+| Triggers | yes | yes | yes |
+| Transactional DDL | yes | no | yes |
+| Array type | no | no | yes |
+| Native JSON type | no (JSON text + functions) | yes | yes (`JSONB`) |
+| Table partitioning | no | yes | yes |
+| Row-level security | no | no | yes |
+| Full-text search | FTS5 extension | InnoDB FULLTEXT | tsvector + GIN |
+
+Two entries deserve emphasis. Transactional DDL means a failed migration in PostgreSQL or SQLite rolls back cleanly; in MySQL, each DDL statement commits implicitly, so a migration that fails halfway leaves you in a partially applied state. Partial indexes (`CREATE INDEX ... WHERE status = 'active'`) are a common tool for keeping hot indexes small; MySQL has no equivalent.
+
+## Extensions and ecosystem
+
+PostgreSQL's extension mechanism is a major reason it wins in complex workloads. PostGIS adds a full spatial database with indexing and hundreds of functions. pgvector adds vector columns and approximate nearest neighbour indexes for embeddings. TimescaleDB turns tables into compressed, automatically partitioned time series hypertables. pg_trgm gives trigram indexes for fuzzy `LIKE` queries, pg_stat_statements gives query-level performance stats, and Citus shards tables across nodes. All of these run inside the same database as your transactional data.
+
+MySQL has spatial types and functions built in (without the breadth of PostGIS), InnoDB full-text indexes, and a plugin and component system that covers authentication, audit logging, keyrings, and Group Replication. It does not have a comparable third-party ecosystem for extending the type system or indexing methods, so analytics and vector work typically move to a separate system.
+
+SQLite supports loadable extensions. FTS5 (full-text search), R*Tree (spatial bounding boxes), and the JSON functions ship with the library; SpatiaLite adds a real GIS layer; sqlite-vec adds vector search. Because everything runs inside your process, adding an extension is a compile or `load_extension` call rather than a deployment.
+
+## Replication and high availability
+
+SQLite has no built-in replication. The modern answer is Litestream, which streams the WAL to object storage for continuous backup and point-in-time restore, and LiteFS or similar for read replicas. These are good for durability but do not give you multi-writer failover; if you need that, you have outgrown SQLite.
+
+MySQL replication is based on the binary log. Asynchronous and semi-synchronous replication with GTIDs is mature and well understood, and Group Replication (packaged as InnoDB Cluster) offers automated failover. Galera-based clusters (Percona XtraDB Cluster, MariaDB Galera) are a common alternative. Tooling such as Orchestrator and ProxySQL rounds it out.
+
+PostgreSQL offers streaming physical replication (byte-for-byte standbys, optionally synchronous) and logical replication (publish selected tables, replicate across major versions, feed other systems). Automatic failover is not built into the core server; Patroni, repmgr, or pg_auto_failover provide it. Cloud providers wrap all of this for you.
+
+## Operational cost and hosting
+
+SQLite's operational cost is nearly zero: no server to patch, no users to manage, backups are a file copy (use the online backup API or `VACUUM INTO`, not `cp` on a live database). The hidden cost is that it lives on one machine, so scaling out your application servers means giving up SQLite or adopting a replicated variant. Hosted options include Cloudflare D1 and Turso, both built on SQLite-compatible engines.
+
+MySQL and PostgreSQL both require someone to think about memory settings, backups, upgrades, and replication. Managed offerings remove most of that: Amazon RDS and Aurora, Google Cloud SQL, and Azure Database cover both engines; PlanetScale focuses on MySQL; Supabase, Neon, Crunchy Bridge, and Timescale Cloud focus on PostgreSQL. Cost between the two engines on managed platforms is comparable; the bigger difference is which one your team already knows how to operate. Whatever you pick, a GUI client that speaks all three dialects, such as Chat2DB (https://chat2db.ai/download, or the web version at https://app.chat2db.ai), DBeaver, or DataGrip, makes it easier to run the same query against each engine while you evaluate.
+
+## Performance, qualitatively
+
+Raw single-node throughput is not a useful axis for sqlite vs mysql vs postgresql because each wins in its own regime. SQLite, having no network hop or parser round trip, is extremely fast for small local reads and for bulk writes inside a single transaction; it is slow when many processes contend for the write lock. MySQL's InnoDB stores tables as clustered B-trees on the primary key, so primary-key lookups and range scans over the key are very cheap, and simple OLTP read-heavy workloads are its home turf; its optimizer is weaker on complex joins and subqueries. PostgreSQL uses heap tables plus separate indexes, has a more capable planner, richer index types (GIN, GiST, BRIN, hash), parallel query, and better behaviour on analytical queries; the trade-offs are vacuum maintenance and per-connection cost. Measure your own workload before believing any benchmark, including ones that would favour your current preference.
+
+## When each one wins
+
+### Choose SQLite for
+
+- Mobile, desktop, and embedded applications, where it is effectively the standard.
+- Edge and serverless deployments where a file-backed store next to the code is ideal.
+- Test suites and local development, where creating a database is creating a file.
+- Single-server web applications with modest write concurrency, particularly with WAL mode and Litestream backups.
+- Data interchange: a SQLite file is a portable, queryable container.
+
+### Choose MySQL for
+
+- Classic LAMP-style web applications and CMS platforms (WordPress, Drupal, Magento) where the ecosystem assumes it.
+- Read-heavy OLTP with simple queries and primary-key access, where the clustered index model shines.
+- Teams with existing MySQL operations experience or a hosting platform that specializes in it.
+- Situations where you need many cheap connections without a pooler.
+
+### Choose PostgreSQL for
+
+- Complex queries, reporting, and analytics living alongside transactional data.
+- Geospatial workloads (PostGIS), vector and semantic search (pgvector), or time series (TimescaleDB).
+- Multi-tenant SaaS, where row-level security, schemas, and partitioning give you isolation options.
+- Data with structure that does not fit flat tables: arrays, JSONB documents, ranges, custom types.
+- Anything where correctness constraints (exclusion constraints, deferrable constraints, transactional DDL) reduce application code.
+
+If you are unsure and the application is a server-side product with growth ambitions, PostgreSQL is the default recommendation: it has the largest feature surface and the fewest ceilings. If the application is a local tool, start with SQLite and only move when the single-writer limit bites.
+
+## Migration paths
+
+The most common migrations are SQLite to PostgreSQL (an application grew) and MySQL to PostgreSQL (an application needed features). Both are well trodden.
+
+### SQLite to PostgreSQL with pgloader
+
+pgloader reads the SQLite file, creates matching tables in PostgreSQL, and copies the data:
+
+```sql
+-- shell, not SQL:
+-- pgloader sqlite:///var/app/app.db postgresql://app:secret@localhost/app
+```
+
+Then fix what a mechanical copy cannot:
+
+```sql
+-- SQLite stored dates as text; convert to real timestamps
+ALTER TABLE products
+  ALTER COLUMN created_at TYPE timestamptz USING created_at::timestamptz;
+
+-- SQLite booleans arrive as 0/1 integers
+ALTER TABLE users
+  ALTER COLUMN is_active TYPE boolean USING is_active = 1;
+
+-- reset identity sequences after the bulk load
+SELECT setval(pg_get_serial_sequence('products', 'id'),
+              (SELECT max(id) FROM products));
+```
+
+Pitfalls: `AUTOINCREMENT` columns become sequences that pgloader may not advance; JSON stored as text should be cast to `jsonb`; and any query that relied on SQLite's loose typing (comparing a text column to an integer) will now fail with a type error, which is a feature.
+
+### MySQL to PostgreSQL
+
+pgloader handles this too, mapping `TINYINT(1)` to boolean, `DATETIME` to `timestamp`, and `AUTO_INCREMENT` to identity columns. The harder part is the SQL in your application: backtick quoting, `LIMIT` inside `IN` subqueries, `GROUP_CONCAT`, `IFNULL`, `DATE_FORMAT`, `ON DUPLICATE KEY UPDATE`, and case-insensitive string comparison all need rewriting. The free MySQL to PostgreSQL converter at https://chat2db.ai/tools/mysql-to-postgresql-converter handles the schema and statement-level translation so you can concentrate on the semantic differences, such as MySQL's silent zero dates and unsigned integers, which PostgreSQL does not have.
+
+Whichever direction you migrate, run both databases in parallel for a while, diff row counts and checksums per table, and keep the old system read-only rather than deleting it on cutover day.
+
+## Summary
+
+SQLite is a library, MySQL is a fast and familiar server, PostgreSQL is a server with a type system and an extension ecosystem that let it absorb workloads other stacks split across several products. Decide on concurrency needs first, data shape second, and team experience third; the feature table above will confirm or veto the choice. Most of the time the answer is obvious once the single-writer question and the "will we need PostGIS, pgvector, or JSONB" question are both answered honestly.

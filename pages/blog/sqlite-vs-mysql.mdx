@@ -1,0 +1,359 @@
+---
+title: "SQLite vs MySQL: Key Differences and When to Use"
+description: "SQLite vs MySQL compared: architecture, concurrency, data types, SQL feature gaps, performance, typical use cases, and how to migrate from SQLite to MySQL."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 9, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# SQLite vs MySQL: Key Differences and When to Use
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 9, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+
+SQLite and MySQL are both relational databases that speak SQL, and that is roughly where the similarity ends. One is a library you link into your program that stores everything in a single file; the other is a network server with users, replication and a storage engine tuned for many concurrent clients. Picking the wrong one is rarely fatal, but it does lead to a familiar pattern: a project starts on SQLite because it is zero-setup, grows a second writer, and hits `database is locked` errors, or a project starts on MySQL for a desktop tool that never needed a server at all.
+
+This article compares the two on the things that actually decide the choice, shows the same schema in both dialects, walks through a migration from SQLite to MySQL, and ends with a decision table.
+
+## Architecture: embedded file vs client-server
+
+SQLite is an embedded, serverless database. There is no daemon, no port and no configuration file. Your application calls the SQLite library directly, and the library reads and writes a single file on disk (plus a journal or WAL file while transactions are in flight). Opening a database is opening a file:
+
+```bash
+sqlite3 app.db "SELECT sqlite_version();"
+```
+
+MySQL is a client-server system. The `mysqld` process owns the data directory, listens on TCP port 3306 (or a Unix socket), authenticates clients, and executes their queries. Every application, including one on the same machine, talks to it over a connection:
+
+```bash
+mysql -h 127.0.0.1 -u app -p -e "SELECT VERSION();"
+```
+
+The consequences of that difference run through everything else:
+
+| Aspect | SQLite | MySQL |
+|--------|--------|-------|
+| Deployment | Library linked into the app | Separate server process |
+| Storage | One file per database | Data directory managed by the server |
+| Network access | None (file access only) | TCP/socket, any number of hosts |
+| Authentication | None (file system permissions) | Users, passwords, host rules, privileges |
+| Configuration | A few `PRAGMA` statements | `my.cnf`, hundreds of server variables |
+| Typical footprint | Under 1 MB library | Server install plus buffer pool memory |
+
+If several machines need to reach the same data, SQLite is out of the running immediately. Sharing an SQLite file over NFS or SMB is explicitly discouraged by the SQLite project because network file locking is unreliable and can corrupt the database.
+
+## Concurrency: single writer vs row-level locking
+
+This is the area where the two diverge most sharply, and where most "SQLite is slow" complaints actually come from.
+
+### SQLite
+
+SQLite locks at the level of the whole database file. In the default rollback-journal mode, a writer takes an exclusive lock that blocks readers for the duration of the commit. Enabling write-ahead logging changes that so readers and a writer can proceed at the same time:
+
+```sql
+PRAGMA journal_mode = WAL;
+PRAGMA busy_timeout = 5000;   -- wait up to 5 s for a lock instead of failing at once
+```
+
+Even in WAL mode there is exactly one writer at a time. A second connection that tries to write while a transaction is open gets `SQLITE_BUSY` (`database is locked`) unless it waits via `busy_timeout`. For a single process with a handful of threads that mostly read, this is fine. For a web application with dozens of workers each opening its own connection and inserting rows, writes serialise and latency climbs under load.
+
+Two practical pitfalls:
+
+- Long-running read transactions in WAL mode prevent the WAL file from being checkpointed, so it grows until the reader finishes.
+- `BEGIN` in SQLite is deferred by default; the write lock is only taken at the first write statement. Use `BEGIN IMMEDIATE` for transactions that will write, so lock contention surfaces at the start rather than in the middle.
+
+### MySQL (InnoDB)
+
+InnoDB, the default storage engine, uses row-level locks and multi-version concurrency control. Readers never block writers and writers never block readers; two transactions updating different rows of the same table proceed in parallel. Only transactions that touch the same rows wait on each other, and deadlocks are detected and one side is rolled back automatically.
+
+```sql
+-- Session A
+START TRANSACTION;
+UPDATE accounts SET balance = balance - 100 WHERE id = 1;
+
+-- Session B, at the same time, does not wait
+START TRANSACTION;
+UPDATE accounts SET balance = balance + 50 WHERE id = 2;
+```
+
+The cost is complexity: isolation levels (`REPEATABLE READ` by default, `READ COMMITTED` common in practice), gap locks, and lock-wait timeouts that need tuning. But it is the reason MySQL can serve thousands of concurrent connections while SQLite cannot.
+
+## Data types: type affinity vs strict types
+
+### SQLite is dynamically typed
+
+SQLite stores whatever value you give it. A column declared `INTEGER` has integer affinity, meaning SQLite will convert `'42'` to `42` if it can, but it will happily store `'hello'` in that column unchanged:
+
+```sql
+CREATE TABLE t (n INTEGER);
+INSERT INTO t VALUES (42), ('42'), ('hello'), (3.5);
+SELECT n, typeof(n) FROM t;
+```
+
+| n | typeof(n) |
+|---|-----------|
+| 42 | integer |
+| 42 | integer |
+| hello | text |
+| 3.5 | real |
+
+There are only five storage classes: `NULL`, `INTEGER`, `REAL`, `TEXT` and `BLOB`. There is no native `BOOLEAN` (use 0 and 1), no `DATE` or `DATETIME` (store ISO-8601 text, Unix epoch integers, or Julian day reals and use the date functions), and `VARCHAR(20)` does not enforce a length. Since SQLite 3.37 you can opt into type checking per table with `STRICT`:
+
+```sql
+CREATE TABLE t_strict (n INTEGER, label TEXT) STRICT;
+INSERT INTO t_strict VALUES ('hello', 'x');   -- error: cannot store TEXT value in INTEGER column
+```
+
+`STRICT` tables only allow `INT`, `INTEGER`, `REAL`, `TEXT`, `BLOB` and `ANY` as column types, so `VARCHAR` and `DATETIME` declarations are rejected there.
+
+### MySQL enforces types
+
+MySQL has a full type system: `TINYINT` through `BIGINT`, `DECIMAL(p,s)` for exact money values, `DATE`, `DATETIME`, `TIMESTAMP`, `ENUM`, `JSON`, and length-checked `VARCHAR(n)`. With the default `sql_mode` (which includes `STRICT_TRANS_TABLES`), an invalid value is an error rather than a silent truncation:
+
+```sql
+CREATE TABLE t (n INT, label VARCHAR(3));
+INSERT INTO t VALUES ('hello', 'x');      -- ERROR 1366: Incorrect integer value
+INSERT INTO t VALUES (1, 'toolong');      -- ERROR 1406: Data too long for column
+```
+
+Older MySQL deployments that run with a permissive `sql_mode` will instead insert `0` and `'too'` with a warning, which is worth checking before you rely on the error behaviour.
+
+## SQL feature gaps
+
+Both engines implement the common core: joins, subqueries, CTEs, window functions, `UPSERT` (`INSERT ... ON CONFLICT` in SQLite, `INSERT ... ON DUPLICATE KEY UPDATE` in MySQL), triggers, views and JSON functions. The differences are at the edges.
+
+### What SQLite lacks
+
+- `ALTER TABLE` is limited. It can rename a table, rename a column, add a column and (since 3.35) drop a column. There is no `ALTER COLUMN` to change a type, add a `NOT NULL` constraint or add a foreign key. The documented workaround is to create a new table, copy the data, drop the old one and rename.
+- No stored procedures or user-defined SQL functions. Custom functions are registered from the host language (Python, C, Go, and so on).
+- No users, roles or `GRANT`. Anyone who can read the file can read the data.
+- `RIGHT JOIN` and `FULL OUTER JOIN` only arrived in SQLite 3.39 (2022). Older embedded versions, such as the one shipped with some operating systems, still reject them.
+- Foreign keys are parsed but not enforced unless you run `PRAGMA foreign_keys = ON;` on every connection.
+- No built-in replication, partitioning or online backup server; `VACUUM INTO` and the backup API cover the single-file case.
+
+### What MySQL adds
+
+- Account management: `CREATE USER`, `GRANT`, host-based access, roles.
+- Replication (source-replica, group replication) and binary logs for point-in-time recovery.
+- Table partitioning by range, list, hash or key.
+- Stored procedures, functions, events and `SIGNAL` for custom errors.
+- Storage engine choice (`InnoDB`, `MyISAM`, `MEMORY`) and per-table options such as compression.
+- Full `ALTER TABLE`, including online schema changes for many operations.
+
+### JSON in both
+
+Both have JSON support, but the syntax differs. SQLite treats JSON as text and provides functions plus `->` and `->>` operators (since 3.38); MySQL has a binary `JSON` column type with validation and the same two operators:
+
+```sql
+-- SQLite
+SELECT json_extract('{"a": {"b": 5}}', '$.a.b');            -- 5
+SELECT '{"a": {"b": 5}}' -> '$.a' ;                        -- {"b":5}
+
+-- MySQL
+SELECT JSON_EXTRACT('{"a": {"b": 5}}', '$.a.b');            -- 5
+SELECT JSON_OBJECT('a', 1) -> '$.a';                        -- 1
+```
+
+## Transactions and durability
+
+Both are ACID-compliant. SQLite wraps every statement outside an explicit transaction in its own transaction, and commits are durable once `fsync` returns, controlled by `PRAGMA synchronous`. The default `FULL` syncs on every commit; `NORMAL` in WAL mode syncs less often and can lose the most recent transactions on power failure (but not corrupt the file). The common performance advice for bulk loads into SQLite is simply to wrap the inserts in one transaction, because per-statement commits mean per-statement `fsync`.
+
+InnoDB writes a redo log and, by default (`innodb_flush_log_at_trx_commit = 1`), flushes it on every commit. Setting it to `2` trades durability on OS crash for throughput, the rough equivalent of `synchronous = NORMAL`. MySQL also supports savepoints, `XA` distributed transactions and explicit isolation levels; SQLite supports savepoints and is always serializable in effect because of its locking model.
+
+## Performance characteristics
+
+Skipping numbers, because they depend entirely on hardware, dataset and access pattern, here is what to expect qualitatively.
+
+SQLite has no network round trip and no client-server protocol overhead. For a single process running many small reads, it is hard to beat: a point lookup is a function call that reads a page from the OS cache. Sequential inserts inside one transaction are also fast. Where it falls behind is concurrent writes (serialised by the single-writer lock), very large datasets that exceed available memory with random access patterns (the page cache is per connection and there is no shared buffer pool), and anything that needs to run on more than one host.
+
+MySQL pays per-query latency for the connection and protocol, which matters for chatty applications running thousands of tiny queries. In return it has a shared `innodb_buffer_pool` that can be sized to hold the working set for every client, background flushing, parallel writers, and an optimizer with histograms and more join strategies. It scales up with cores and RAM and scales out with read replicas.
+
+A fair summary: SQLite wins when the data and the code live in the same process; MySQL wins when many clients share the data.
+
+## Typical use cases
+
+Use SQLite when:
+
+- The database ships with the application: mobile apps, desktop software, browser profiles, embedded devices.
+- You need a local cache or an application file format that happens to be queryable.
+- Tests need a fresh database per run with no fixtures to spin up.
+- A CLI or data-science script wants to query a few gigabytes of local data without installing a server.
+- Edge or serverless deployments where a read-mostly database can be bundled with the function.
+
+Use MySQL when:
+
+- Multiple application servers or services need the same data.
+- Concurrent writes from many users are the normal workload, not the exception.
+- You need user accounts, privilege separation, or audit requirements.
+- High availability, replication, backups with point-in-time recovery, or read scaling are requirements.
+- The schema will evolve in production and you need `ALTER TABLE` without rebuilding tables.
+
+## Example schema in both dialects
+
+The same three-table schema, written idiomatically for each engine. Differences are commented inline.
+
+SQLite:
+
+```sql
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE users (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,   -- rowid alias
+    email      TEXT NOT NULL UNIQUE,
+    is_active  INTEGER NOT NULL DEFAULT 1,          -- boolean as 0/1
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))   -- ISO-8601 text
+);
+
+CREATE TABLE orders (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    total      REAL NOT NULL,                       -- no DECIMAL; store cents in INTEGER if exactness matters
+    status     TEXT NOT NULL CHECK (status IN ('new', 'paid', 'shipped')),
+    placed_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX orders_user_idx ON orders(user_id);
+
+CREATE TABLE order_items (
+    order_id   INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    sku        TEXT NOT NULL,
+    qty        INTEGER NOT NULL CHECK (qty > 0),
+    PRIMARY KEY (order_id, sku)
+) WITHOUT ROWID;
+```
+
+MySQL 8:
+
+```sql
+CREATE TABLE users (
+    id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    email      VARCHAR(255) NOT NULL UNIQUE,
+    is_active  BOOLEAN NOT NULL DEFAULT TRUE,       -- alias for TINYINT(1)
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE orders (
+    id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    user_id    BIGINT UNSIGNED NOT NULL,
+    total      DECIMAL(12, 2) NOT NULL,             -- exact money type
+    status     ENUM('new', 'paid', 'shipped') NOT NULL,
+    placed_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_orders_user FOREIGN KEY (user_id)
+        REFERENCES users(id) ON DELETE CASCADE,
+    INDEX orders_user_idx (user_id)
+) ENGINE = InnoDB;
+
+CREATE TABLE order_items (
+    order_id   BIGINT UNSIGNED NOT NULL,
+    sku        VARCHAR(64) NOT NULL,
+    qty        INT NOT NULL,
+    PRIMARY KEY (order_id, sku),
+    CONSTRAINT fk_items_order FOREIGN KEY (order_id)
+        REFERENCES orders(id) ON DELETE CASCADE,
+    CONSTRAINT chk_qty CHECK (qty > 0)
+) ENGINE = InnoDB;
+```
+
+Things to notice:
+
+- `INTEGER PRIMARY KEY` in SQLite is an alias for the internal `rowid`; `AUTOINCREMENT` is optional and only prevents id reuse after deletes. In MySQL `AUTO_INCREMENT` (no second T) is the only way to get generated keys.
+- SQLite needs `PRAGMA foreign_keys = ON` per connection or the `REFERENCES` clauses are decorative.
+- MySQL `CHECK` constraints are enforced from 8.0.16; before that they were parsed and ignored.
+- `WITHOUT ROWID` in SQLite is the closest thing to InnoDB's clustered primary key for composite-key tables.
+
+## Migrating from SQLite to MySQL
+
+The classic migration is a project that started on SQLite and needs to move to MySQL for concurrency or multi-host access. The mechanics are simple; the schema translation is where the work is.
+
+### Step 1: dump the SQLite database
+
+```bash
+sqlite3 app.db .dump > dump.sql
+```
+
+The output contains `PRAGMA foreign_keys=OFF;`, `BEGIN TRANSACTION;`, the `CREATE TABLE` statements, `INSERT` statements and `COMMIT;`. It will not load into MySQL as-is.
+
+### Step 2: clean up the dump
+
+The lines that break in MySQL and what to do about them:
+
+| SQLite dump | Problem in MySQL | Fix |
+|-------------|------------------|-----|
+| `PRAGMA ...` | Unknown statement | Delete the line |
+| `BEGIN TRANSACTION;` | Not MySQL syntax | Replace with `START TRANSACTION;` |
+| `AUTOINCREMENT` | Spelled `AUTO_INCREMENT` | Rename, and make sure the column is a key |
+| `INTEGER PRIMARY KEY` | Fine, but 32-bit `INT` | Use `BIGINT` if ids will grow |
+| `"table_name"` double-quoted identifiers | Treated as string literals by default | Replace with backticks or `SET sql_mode = 'ANSI_QUOTES'` |
+| `sqlite_sequence` table and inserts | Internal to SQLite | Delete |
+| `TEXT` primary keys or unique columns | `TEXT` cannot be indexed without a prefix length | Change to `VARCHAR(n)` |
+| `REAL` money columns | Floating point | Convert to `DECIMAL(p,s)` |
+| `WITHOUT ROWID` | Unknown clause | Delete |
+| `X'...'` blob literals | Supported | Keep |
+
+A small `sed` pass handles the mechanical parts, then review the `CREATE TABLE` statements by hand:
+
+```bash
+sed -E \
+  -e '/^PRAGMA/d' \
+  -e '/sqlite_sequence/d' \
+  -e 's/BEGIN TRANSACTION;/START TRANSACTION;/' \
+  -e 's/AUTOINCREMENT/AUTO_INCREMENT/g' \
+  -e 's/"([A-Za-z_][A-Za-z0-9_]*)"/`\1`/g' \
+  dump.sql > dump_mysql.sql
+```
+
+Do not trust the identifier regex blindly: it will also rewrite double-quoted strings inside `INSERT` values if any exist. SQLite's `.dump` uses single quotes for string values, so this is usually safe, but grep the result for backticks inside `VALUES (...)` before loading.
+
+### Step 3: fix the data types the dump cannot express
+
+Because SQLite never enforced types, the data may not match the declared type. Check before you load:
+
+```sql
+-- In SQLite: find rows whose stored type disagrees with the declared type
+SELECT id, typeof(created_at) FROM users WHERE typeof(created_at) <> 'text';
+SELECT id, total FROM orders WHERE typeof(total) NOT IN ('integer', 'real');
+```
+
+Then convert on the way in. Booleans stored as `0`/`1` load straight into `BOOLEAN`. Dates stored as ISO-8601 text (`2026-09-09 14:30:00`) load into `DATETIME` directly; dates stored as Unix epoch integers need `FROM_UNIXTIME()`; anything else (`'09/09/2026'`, empty strings, `'N/A'`) will be rejected in strict mode and should be normalised first. Empty strings in numeric columns are the most common failure.
+
+### Step 4: load and verify
+
+```bash
+mysql -u app -p app_db < dump_mysql.sql
+```
+
+Then compare row counts table by table:
+
+```sql
+-- SQLite
+SELECT 'users', COUNT(*) FROM users UNION ALL SELECT 'orders', COUNT(*) FROM orders;
+
+-- MySQL
+SELECT 'users', COUNT(*) FROM users UNION ALL SELECT 'orders', COUNT(*) FROM orders;
+```
+
+Finally, review the application queries. The usual breakages are SQLite-only functions (`strftime`, `datetime('now')`, `julianday`, `group_concat` with a custom separator syntax), `INSERT OR REPLACE` (MySQL uses `REPLACE INTO` or `ON DUPLICATE KEY UPDATE`), `||` for concatenation (MySQL uses `CONCAT()` unless `PIPES_AS_CONCAT` is set), and `LIMIT` with `OFFSET` ordering, which is the same in both but worth re-testing.
+
+### Tools
+
+For inspecting both databases during a migration, a client that connects to SQLite and MySQL at the same time saves a lot of tab switching. Chat2DB supports both, so you can keep the source `.db` file and the target MySQL schema open side by side and run the same verification queries against each (download at https://chat2db.ai/download or use the web version at https://app.chat2db.ai). The `sqlite3` and `mysql` command-line clients are the fallback and are all the scripts above need.
+
+## Decision table
+
+| Question | Pick SQLite | Pick MySQL |
+|----------|-------------|------------|
+| How many processes or hosts write to the data? | One | More than one |
+| Does the database ship inside the application? | Yes | No |
+| Do you need users and privileges? | No | Yes |
+| Expected concurrent writers | A few threads | Many connections |
+| Need replication, failover or read replicas? | No | Yes |
+| Schema changes in production | Rare, or rebuild is acceptable | Frequent, need `ALTER COLUMN` |
+| Exact decimal money columns | Store integer cents | `DECIMAL` |
+| Operational budget | Zero (no server to run) | Someone runs the server |
+| Test fixtures and local dev | Ideal | Use containers |
+
+If most of your answers land in the left column, SQLite is not a compromise; it is the right tool, and it will be simpler and faster than a server for that job. If they land on the right, start on MySQL from the beginning rather than planning a migration later. Both are excellent at what they are designed for; the mistake is asking either of them to be the other.

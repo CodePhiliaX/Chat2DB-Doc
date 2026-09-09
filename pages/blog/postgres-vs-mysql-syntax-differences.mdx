@@ -1,0 +1,394 @@
+---
+title: "PostgreSQL vs MySQL Syntax Differences Cheat Sheet"
+description: "Side-by-side PostgreSQL vs MySQL syntax: quoting, data types, LIMIT, upsert, RETURNING, string and date functions, casting, GROUP BY rules and CTEs."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 9, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# PostgreSQL vs MySQL Syntax Differences Cheat Sheet
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 9, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+MySQL and PostgreSQL both implement a large slice of the SQL standard, which is exactly why the differences hurt: a query that looks portable runs on one and fails, or worse, silently returns something different, on the other. This cheat sheet lists the postgresql vs mysql syntax differences that come up in real migrations and in teams that run both, each with side-by-side SQL. The examples target PostgreSQL 15 or later and MySQL 8.0; older MySQL versions differ in more places, especially around CTEs and window functions.
+
+A quick reference table is at the end. Read the sections first, because most of the differences have a pitfall attached that a table cannot capture.
+
+## Identifier quoting and case folding
+
+PostgreSQL follows the standard: double quotes delimit identifiers, and unquoted identifiers are folded to lower case. MySQL uses backticks and, by default, treats double quotes as string delimiters.
+
+```sql
+-- PostgreSQL
+SELECT "OrderId", "customer" FROM "Orders";
+
+-- MySQL
+SELECT `OrderId`, `customer` FROM `Orders`;
+```
+
+Case folding is the real trap. In PostgreSQL, `CREATE TABLE Orders (...)` creates a table called `orders`, and `SELECT * FROM "Orders"` then fails because the quoted name is case sensitive. Never mix quoted and unquoted forms of the same name. In MySQL, table name case sensitivity depends on the filesystem and the `lower_case_table_names` setting: case sensitive on Linux by default, insensitive on Windows and macOS. Column names are always case insensitive in MySQL.
+
+MySQL can be told to accept double quotes for identifiers with `SET sql_mode = 'ANSI_QUOTES'`, which is a useful compatibility switch during migration but rarely enabled in production.
+
+## String quoting and escapes
+
+Both use single quotes for string literals. The differences are in escaping:
+
+```sql
+-- PostgreSQL: backslash is a plain character by default
+SELECT 'C:\temp';            -- C:\temp
+SELECT E'line1\nline2';      -- E-string enables escapes
+SELECT $$it's "quoted"$$;    -- dollar quoting, no escaping needed
+
+-- MySQL: backslash escapes are always on
+SELECT 'C:\\temp';           -- C:\temp
+SELECT 'line1\nline2';       -- newline
+SELECT "double quoted";      -- a string, not an identifier
+```
+
+Both accept `''` to embed a single quote. When moving MySQL data via SQL dumps, doubled backslashes need attention because PostgreSQL will keep both of them unless `standard_conforming_strings` is off (it is on by default and should stay on).
+
+## Data types
+
+### Auto-increment keys
+
+```sql
+-- PostgreSQL (preferred modern form)
+CREATE TABLE t (id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY);
+-- PostgreSQL (older form, still common)
+CREATE TABLE t (id BIGSERIAL PRIMARY KEY);
+
+-- MySQL
+CREATE TABLE t (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY);
+```
+
+`SERIAL` is shorthand for an integer column with a default drawn from a sequence; `GENERATED ... AS IDENTITY` is the standard form and manages the sequence ownership more cleanly. Note MySQL's `UNSIGNED`, which PostgreSQL does not have; unsigned columns migrate to the next larger signed type or to a `CHECK (id >= 0)`.
+
+### Booleans
+
+PostgreSQL has a real `BOOLEAN` type that accepts `true`, `false`, `'t'`, `'yes'`, `'1'`, and so on, and only stores true, false, or null. MySQL's `BOOLEAN` is an alias for `TINYINT(1)`, so `WHERE active = 2` is valid and `SELECT active` returns 0 or 1.
+
+```sql
+-- PostgreSQL
+SELECT * FROM users WHERE active;          -- valid, column is boolean
+SELECT * FROM users WHERE active = true;
+
+-- MySQL
+SELECT * FROM users WHERE active = 1;
+SELECT * FROM users WHERE active IS TRUE;  -- also works
+```
+
+### Text and VARCHAR
+
+In PostgreSQL, `TEXT`, `VARCHAR`, and `VARCHAR(n)` are the same type with an optional length check; there is no performance difference and `TEXT` is idiomatic. In MySQL, `VARCHAR(n)` is stored inline, `TEXT` is stored partly out of row, `TEXT` columns need a prefix length to be indexed, and `TEXT` cannot have a default value in older versions. Use `VARCHAR(n)` in MySQL for anything you index.
+
+### Dates and times
+
+```sql
+-- PostgreSQL
+created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+
+-- MySQL
+created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
+-- or
+created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+```
+
+PostgreSQL `TIMESTAMPTZ` stores an instant in UTC and renders it in the session time zone; `TIMESTAMP` (without time zone) stores a wall-clock value with no conversion. MySQL `TIMESTAMP` converts to and from UTC using the session time zone and has a range that ends in 2038; `DATETIME` stores wall-clock values without conversion and has a wider range. Fractional seconds are on by default in PostgreSQL (microseconds) and must be declared in MySQL with a precision such as `DATETIME(6)`.
+
+MySQL also permits the zero date `'0000-00-00'` unless `NO_ZERO_DATE` is in `sql_mode`. PostgreSQL rejects it, which is a frequent migration failure.
+
+### JSON
+
+PostgreSQL has `JSON` (stored as text, preserves formatting) and `JSONB` (binary, indexable, deduplicates keys). Always use `JSONB`. MySQL has a single `JSON` type that is stored in a binary format, similar in spirit to `JSONB`.
+
+```sql
+-- PostgreSQL
+SELECT data->>'email' FROM users WHERE data @> '{"plan": "pro"}';
+CREATE INDEX ON users USING gin (data);
+
+-- MySQL
+SELECT data->>'$.email' FROM users WHERE JSON_EXTRACT(data, '$.plan') = 'pro';
+-- MySQL indexes JSON via generated columns or multi-valued indexes
+ALTER TABLE users ADD COLUMN plan VARCHAR(20)
+  AS (data->>'$.plan') STORED, ADD INDEX (plan);
+```
+
+The `->>` operator exists in both but takes a key in PostgreSQL and a JSON path in MySQL.
+
+### Arrays, UUID, ENUM
+
+PostgreSQL has native arrays (`INTEGER[]`, `TEXT[]`) with `ANY`, `unnest`, and GIN indexes. MySQL has no array type; use a JSON array or a child table. PostgreSQL has a native `UUID` type (16 bytes) and `gen_random_uuid()`; MySQL stores UUIDs as `CHAR(36)` or `BINARY(16)` with `UUID_TO_BIN()` and `BIN_TO_UUID()`. Both have `ENUM`, but in PostgreSQL it is a named type created with `CREATE TYPE`, while in MySQL it is declared inline per column.
+
+```sql
+-- PostgreSQL
+CREATE TYPE status AS ENUM ('draft', 'live', 'archived');
+CREATE TABLE posts (id UUID DEFAULT gen_random_uuid(), s status, tags TEXT[]);
+
+-- MySQL
+CREATE TABLE posts (
+  id BINARY(16) DEFAULT (UUID_TO_BIN(UUID())),
+  s ENUM('draft', 'live', 'archived'),
+  tags JSON
+);
+```
+
+## LIMIT, OFFSET and FETCH FIRST
+
+Both accept `LIMIT n OFFSET m`. MySQL also accepts `LIMIT m, n` (offset first), which PostgreSQL does not. PostgreSQL also accepts the standard `FETCH FIRST n ROWS ONLY`, which MySQL does not.
+
+```sql
+-- Works in both
+SELECT * FROM orders ORDER BY id LIMIT 20 OFFSET 40;
+
+-- MySQL only
+SELECT * FROM orders ORDER BY id LIMIT 40, 20;
+
+-- PostgreSQL only
+SELECT * FROM orders ORDER BY id OFFSET 40 ROWS FETCH FIRST 20 ROWS ONLY;
+```
+
+Pitfall: MySQL does not allow `LIMIT` in an `IN` subquery (`WHERE id IN (SELECT id FROM t LIMIT 5)` is an error). Rewrite as a derived table or a join.
+
+## Upsert
+
+```sql
+-- PostgreSQL
+INSERT INTO counters (key, n) VALUES ('hits', 1)
+ON CONFLICT (key) DO UPDATE SET n = counters.n + EXCLUDED.n;
+
+INSERT INTO counters (key, n) VALUES ('hits', 1)
+ON CONFLICT DO NOTHING;
+
+-- MySQL 8.0.19+
+INSERT INTO counters (`key`, n) VALUES ('hits', 1) AS new
+ON DUPLICATE KEY UPDATE n = counters.n + new.n;
+
+-- MySQL, any version
+INSERT IGNORE INTO counters (`key`, n) VALUES ('hits', 1);
+```
+
+Differences worth remembering. PostgreSQL requires you to name the conflict target (a column list or constraint) for `DO UPDATE`; MySQL fires on any unique index. `INSERT IGNORE` in MySQL suppresses more than duplicate-key errors, including some data conversion errors, so it is not a clean equivalent of `DO NOTHING`. MySQL also has `REPLACE INTO`, which deletes and reinserts the row, firing delete triggers and breaking foreign keys with `ON DELETE CASCADE`; avoid it. Note `key` is a reserved word in MySQL and needs backticks.
+
+## RETURNING vs LAST_INSERT_ID()
+
+```sql
+-- PostgreSQL: any INSERT, UPDATE or DELETE can return rows
+INSERT INTO orders (customer_id) VALUES (7) RETURNING id, created_at;
+DELETE FROM sessions WHERE expires_at < now() RETURNING id;
+
+-- MySQL
+INSERT INTO orders (customer_id) VALUES (7);
+SELECT LAST_INSERT_ID();
+```
+
+`LAST_INSERT_ID()` is per connection and returns the first auto-increment value generated by the last insert, so a multi-row insert returns the id of the first row only. There is no way in MySQL to return columns from an `UPDATE` or `DELETE` in one statement.
+
+## String concatenation and aggregation
+
+```sql
+-- PostgreSQL
+SELECT first_name || ' ' || last_name FROM people;
+SELECT concat(first_name, ' ', last_name) FROM people;   -- null-safe
+SELECT string_agg(name, ', ' ORDER BY name) FROM tags;
+
+-- MySQL
+SELECT CONCAT(first_name, ' ', last_name) FROM people;
+SELECT GROUP_CONCAT(name ORDER BY name SEPARATOR ', ') FROM tags;
+```
+
+In MySQL, `||` is logical OR unless `PIPES_AS_CONCAT` is in `sql_mode`, so a PostgreSQL concatenation ported unchanged returns 0 or 1 with no error. In PostgreSQL, `||` with a null operand yields null, while `concat()` treats nulls as empty strings, matching MySQL's `CONCAT_WS` more than its `CONCAT` (which returns null if any argument is null). `GROUP_CONCAT` silently truncates at `group_concat_max_len` (1024 bytes by default); `string_agg` has no limit.
+
+## Date functions and INTERVAL
+
+```sql
+-- PostgreSQL
+SELECT now(), current_date, date_trunc('month', created_at)
+FROM orders WHERE created_at >= now() - interval '7 days';
+SELECT to_char(created_at, 'YYYY-MM-DD HH24:MI') FROM orders;
+SELECT extract(dow FROM created_at) FROM orders;
+
+-- MySQL
+SELECT NOW(), CURDATE(), DATE_FORMAT(created_at, '%Y-%m-01')
+FROM orders WHERE created_at >= NOW() - INTERVAL 7 DAY;
+SELECT DATE_FORMAT(created_at, '%Y-%m-%d %H:%i') FROM orders;
+SELECT DAYOFWEEK(created_at) FROM orders;
+```
+
+`INTERVAL` is a quoted string in PostgreSQL (`interval '7 days'`) and an unquoted number plus unit in MySQL (`INTERVAL 7 DAY`). Format strings are entirely different: PostgreSQL uses `to_char` patterns like `YYYY` and `HH24`, MySQL uses `strftime`-like `%Y` and `%H`. `DATE_TRUNC` has no direct MySQL equivalent; `DATE_FORMAT` to a truncated pattern or `DATE(created_at)` for day precision is the usual substitute. PostgreSQL `now()` returns the transaction start time, constant within a transaction; MySQL `NOW()` is statement time, and `SYSDATE()` is call time.
+
+## Casting
+
+```sql
+-- PostgreSQL
+SELECT '42'::integer, price::numeric(10,2), CAST(x AS text);
+
+-- MySQL
+SELECT CAST('42' AS SIGNED), CAST(price AS DECIMAL(10,2)), CAST(x AS CHAR);
+```
+
+`CAST(... AS ...)` works in both, but the type names differ: MySQL casts to `SIGNED`, `UNSIGNED`, `CHAR`, `DECIMAL`, `DATETIME`, `JSON`, not to `INT` or `VARCHAR`. The `::` shorthand is PostgreSQL only. MySQL also performs implicit conversions freely (`'abc' = 0` is true), whereas PostgreSQL raises an error when it cannot find an unambiguous cast, so a MySQL query comparing a string column to a number needs an explicit cast.
+
+## Case-insensitive matching: ILIKE vs collation
+
+PostgreSQL comparisons are case sensitive by default, and `ILIKE` (or `lower(col) LIKE lower(pattern)` with an expression index) is the tool for case-insensitive matching. The `citext` extension provides a case-insensitive text type. MySQL string columns carry a collation, and the default `utf8mb4_0900_ai_ci` is accent- and case-insensitive, so `WHERE email = 'Bob@Example.com'` matches `bob@example.com` without any special syntax.
+
+```sql
+-- PostgreSQL
+SELECT * FROM users WHERE email ILIKE 'bob@%';
+SELECT * FROM users WHERE email = 'Bob@Example.com' COLLATE "C";  -- explicit
+
+-- MySQL
+SELECT * FROM users WHERE email LIKE 'bob@%';                     -- already ci
+SELECT * FROM users WHERE email = 'bob' COLLATE utf8mb4_0900_as_cs; -- force cs
+```
+
+This is one of the largest semantic differences in a migration: unique indexes that treated `Alice` and `alice` as duplicates in MySQL will accept both in PostgreSQL.
+
+## GROUP BY strictness
+
+PostgreSQL requires every non-aggregated column in the select list to appear in `GROUP BY`, or to be functionally dependent on a grouped primary key. MySQL 8 enforces the same rule via `ONLY_FULL_GROUP_BY` (on by default), but many servers have it disabled, and then MySQL returns an arbitrary value for ungrouped columns.
+
+```sql
+-- Fails in PostgreSQL and in MySQL with ONLY_FULL_GROUP_BY
+SELECT customer_id, email, count(*) FROM orders GROUP BY customer_id;
+
+-- Correct in both
+SELECT customer_id, min(email), count(*) FROM orders GROUP BY customer_id;
+
+-- MySQL only: ANY_VALUE marks the column as deliberately arbitrary
+SELECT customer_id, ANY_VALUE(email), count(*) FROM orders GROUP BY customer_id;
+```
+
+## DISTINCT ON
+
+PostgreSQL's `DISTINCT ON` returns the first row per group according to `ORDER BY`, a compact way to write "latest order per customer". MySQL has no equivalent; use a window function.
+
+```sql
+-- PostgreSQL
+SELECT DISTINCT ON (customer_id) customer_id, id, created_at
+FROM orders ORDER BY customer_id, created_at DESC;
+
+-- MySQL 8 (and also valid in PostgreSQL)
+SELECT customer_id, id, created_at FROM (
+  SELECT o.*, ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY created_at DESC) AS rn
+  FROM orders o
+) ranked WHERE rn = 1;
+```
+
+## Window functions and CTEs
+
+Both support window functions and CTEs since MySQL 8.0, and the recursive form is spelled the same way: both engines require the `RECURSIVE` keyword (unlike SQL Server and Oracle, which accept plain `WITH`).
+
+```sql
+-- Identical in PostgreSQL and MySQL 8
+WITH RECURSIVE tree AS (
+  SELECT id, parent_id, name, 1 AS depth FROM categories WHERE parent_id IS NULL
+  UNION ALL
+  SELECT c.id, c.parent_id, c.name, t.depth + 1
+  FROM categories c JOIN tree t ON c.parent_id = t.id
+)
+SELECT * FROM tree ORDER BY depth, name;
+```
+
+Differences: PostgreSQL supports `MATERIALIZED` and `NOT MATERIALIZED` hints on CTEs and allows data-modifying CTEs (`WITH deleted AS (DELETE ... RETURNING *) INSERT INTO archive SELECT * FROM deleted`). MySQL CTEs are read-only. MySQL has a `cte_max_recursion_depth` limit (1000 by default) that aborts deep recursion; PostgreSQL has no such limit and will run until memory or an explicit termination condition stops it.
+
+## TRUNCATE and CASCADE
+
+```sql
+-- PostgreSQL: transactional, can cascade to referencing tables, resets identities
+TRUNCATE orders, order_items RESTART IDENTITY CASCADE;
+
+-- MySQL: implicit commit, refuses if a foreign key references the table
+SET FOREIGN_KEY_CHECKS = 0;
+TRUNCATE TABLE order_items;
+TRUNCATE TABLE orders;
+SET FOREIGN_KEY_CHECKS = 1;
+```
+
+PostgreSQL `TRUNCATE` is transactional and can be rolled back; MySQL `TRUNCATE` is DDL and commits. `DROP TABLE ... CASCADE` in PostgreSQL drops dependent views and foreign keys; MySQL accepts `CASCADE` on `DROP TABLE` for parsing compatibility but ignores it.
+
+## Schemas vs databases
+
+In MySQL, `SCHEMA` and `DATABASE` are synonyms: `CREATE SCHEMA app` and `CREATE DATABASE app` do the same thing, and you can join across them with `db1.table JOIN db2.table` on one connection. In PostgreSQL, a database is an isolation boundary (no cross-database queries without `dblink` or `postgres_fdw`), and inside a database, schemas are namespaces you can join across freely.
+
+```sql
+-- PostgreSQL
+CREATE SCHEMA billing;
+CREATE TABLE billing.invoices (...);
+SET search_path TO billing, public;
+
+-- MySQL
+CREATE DATABASE billing;
+CREATE TABLE billing.invoices (...);
+USE billing;
+```
+
+The MySQL `USE db` maps to PostgreSQL's `search_path`, not to reconnecting. Multi-tenant designs that used one MySQL database per tenant usually become one PostgreSQL schema per tenant.
+
+## Sequences
+
+PostgreSQL sequences are standalone objects: you can create them, share one between tables, call `nextval`, `currval`, and `setval`, and inspect them. MySQL has no sequence objects; auto-increment is a per-table property, and `AUTO_INCREMENT = n` in `ALTER TABLE` is how you reset it.
+
+```sql
+-- PostgreSQL
+CREATE SEQUENCE invoice_no START 1000;
+SELECT nextval('invoice_no');
+SELECT setval('invoice_no', 5000);
+
+-- MySQL
+ALTER TABLE invoices AUTO_INCREMENT = 5000;
+```
+
+## Performance differences, qualitatively
+
+Syntax is the visible part of postgres vs mysql performance; the storage engines are the invisible part, and they explain most of the behaviour you will see under load.
+
+InnoDB stores each table as a clustered B-tree ordered by the primary key, with secondary indexes pointing at the primary key value. Primary-key lookups and range scans over the key are therefore very cheap, secondary index lookups cost an extra traversal, and a wide or random primary key (a `CHAR(36)` UUID, say) makes every secondary index larger and inserts scattered. PostgreSQL stores rows in a heap in insertion order with all indexes, including the primary key, as separate structures pointing at physical row locations; there is no ordering advantage for the primary key, but no penalty for large or random keys either, and index-only scans compensate when the visibility map is current.
+
+Both use MVCC, but with opposite bookkeeping. InnoDB keeps old row versions in undo logs and purges them in the background, so the table itself does not grow from updates, but long transactions delay purge. PostgreSQL writes a new tuple for every update and leaves the old one for vacuum, so update-heavy tables need autovacuum tuned to keep bloat and index size under control. Heap-only tuple updates help when the updated columns are not indexed and the page has room, which is why a lower `fillfactor` on hot tables is a common setting.
+
+Connection cost is the other structural difference. A PostgreSQL connection is a process with its own memory, so applications with many short-lived connections need a pooler such as PgBouncer or the pooler built into their platform. MySQL connections are threads and are cheaper to create and hold, so the same application often runs without a pooler. On the query side, PostgreSQL's planner handles complex joins, subqueries, and analytical queries with more sophistication, and it has parallel query, more index types, and partial indexes; MySQL's optimizer is tuned for the simple OLTP patterns where the clustered index model shines. Which one is faster for you depends on which of these regimes your workload lives in, so test with your own queries and data rather than trusting a general benchmark.
+
+## Quick reference
+
+| Topic | PostgreSQL | MySQL 8 |
+|---|---|---|
+| Identifier quotes | `"name"` | `` `name` `` |
+| Unquoted identifier folding | lower case | preserved, case-insensitive columns |
+| String escape | none by default, `E'...'` | backslash always |
+| Auto-increment | `GENERATED AS IDENTITY`, `SERIAL` | `AUTO_INCREMENT` |
+| Boolean | true `BOOLEAN` | `TINYINT(1)` |
+| Timestamp with zone | `TIMESTAMPTZ` | `TIMESTAMP` (UTC-converted, 2038 limit) |
+| JSON | `JSONB` | `JSON` |
+| Arrays | native | JSON array or child table |
+| UUID | `UUID`, `gen_random_uuid()` | `BINARY(16)`, `UUID_TO_BIN(UUID())` |
+| Pagination | `LIMIT n OFFSET m`, `FETCH FIRST` | `LIMIT n OFFSET m`, `LIMIT m, n` |
+| Upsert | `ON CONFLICT ... DO UPDATE` | `ON DUPLICATE KEY UPDATE` |
+| Skip duplicates | `ON CONFLICT DO NOTHING` | `INSERT IGNORE` |
+| Return inserted id | `RETURNING id` | `LAST_INSERT_ID()` |
+| Concatenate | `\|\|`, `concat()` | `CONCAT()` |
+| Aggregate strings | `string_agg()` | `GROUP_CONCAT()` |
+| Truncate date | `date_trunc()` | `DATE_FORMAT()`, `DATE()` |
+| Interval | `interval '7 days'` | `INTERVAL 7 DAY` |
+| Format date | `to_char()` | `DATE_FORMAT()` |
+| Cast | `x::int`, `CAST` | `CAST(x AS SIGNED)` |
+| Case-insensitive match | `ILIKE`, `citext` | default collation |
+| Null coalescing | `coalesce()` | `IFNULL()`, `COALESCE()` |
+| First row per group | `DISTINCT ON` | `ROW_NUMBER()` window |
+| Recursive CTE | `WITH RECURSIVE` | `WITH RECURSIVE` |
+| Modifying CTE | yes | no |
+| Truncate | transactional, `CASCADE` | implicit commit, no cascade |
+| Namespace | schema inside database | database (schema is a synonym) |
+| Sequences | standalone objects | per-table `AUTO_INCREMENT` |
+| Transactional DDL | yes | no |
+
+If you are porting a body of SQL from one to the other, the free converter at https://chat2db.ai/tools/mysql-to-postgresql-converter handles the mechanical rewrites in this table (quoting, types, `LIMIT` forms, upserts, common functions), leaving you with the semantic checks: collation behaviour, zero dates, implicit casts, and `GROUP BY` strictness. To test the results against a live database, you can run both dialects side by side in Chat2DB (https://chat2db.ai/download, or the web version at https://app.chat2db.ai), which connects to PostgreSQL and MySQL from the same workspace.
+
+## Summary
+
+Most mysql postgresql syntax differences fall into four buckets: quoting and case folding, type names and their semantics, a handful of proprietary conveniences (`RETURNING`, `DISTINCT ON`, `::` on one side; `LIMIT m, n`, `GROUP_CONCAT`, `INSERT IGNORE` on the other), and the standard-compliance settings that MySQL exposes through `sql_mode`. Learn the pitfalls attached to each, keep the reference table nearby, and the two databases become easy to work with together.

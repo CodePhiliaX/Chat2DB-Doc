@@ -1,0 +1,356 @@
+---
+title: "SQL BETWEEN Dates: Inclusive or Exclusive?"
+description: "SQL BETWEEN is inclusive on both ends and silently drops rows when dates carry a time. Learn the half-open range fix and timestamp and index rules by dialect."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 9, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# SQL BETWEEN Dates: Inclusive or Exclusive?
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 9, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+`BETWEEN` is inclusive on both ends. That is the whole answer to the question in the title, and it is also the source of one of the most common date-filtering bugs in SQL: a report for January that quietly loses everything that happened on January 31 after midnight. This article explains why that happens, shows the half-open range pattern that fixes it, and walks through the dialect details in PostgreSQL, MySQL, SQL Server, Oracle and SQLite that turn a simple predicate into something you actually have to think about.
+
+## What BETWEEN actually means
+
+The SQL standard defines `x BETWEEN a AND b` as shorthand for:
+
+```sql
+x >= a AND x <= b
+```
+
+Nothing more. It is inclusive of both `a` and `b`, it works on any comparable type (numbers, strings, dates, timestamps), and it evaluates `x` only once, which is its one practical advantage over writing the two comparisons by hand. Note that if `a` is greater than `b`, the standard form returns no rows; it does not swap the bounds for you.
+
+`NOT BETWEEN` is the negation:
+
+```sql
+x NOT BETWEEN a AND b
+-- equivalent to
+x < a OR x > b
+```
+
+As with every SQL comparison, if `x`, `a` or `b` is `NULL`, both `BETWEEN` and `NOT BETWEEN` return unknown and the row is filtered out.
+
+## The sample table
+
+Every example below runs against this `orders` table. The DDL is written for PostgreSQL; the dialect sections note what changes elsewhere.
+
+```sql
+CREATE TABLE orders (
+  order_id   INT PRIMARY KEY,
+  customer   TEXT NOT NULL,
+  amount     NUMERIC(10, 2) NOT NULL,
+  created_at TIMESTAMP NOT NULL
+);
+
+INSERT INTO orders VALUES
+  (1, 'alice', 120.00, '2025-12-31 23:59:59'),
+  (2, 'bob',    45.50, '2026-01-01 00:00:00'),
+  (3, 'carol',  80.00, '2026-01-15 12:30:00'),
+  (4, 'dave',  310.00, '2026-01-31 00:00:00'),
+  (5, 'erin',   19.99, '2026-01-31 18:45:10'),
+  (6, 'frank',  64.00, '2026-02-01 00:00:00');
+```
+
+A correct "January 2026" filter should return orders 2, 3, 4 and 5.
+
+## The classic timestamp bug
+
+Here is the query most people write first:
+
+```sql
+SELECT order_id, customer, created_at
+FROM orders
+WHERE created_at BETWEEN '2026-01-01' AND '2026-01-31';
+```
+
+Result:
+
+| order_id | customer | created_at |
+|---|---|---|
+| 2 | bob | 2026-01-01 00:00:00 |
+| 3 | carol | 2026-01-15 12:30:00 |
+| 4 | dave | 2026-01-31 00:00:00 |
+
+Order 5 is missing. The literal `'2026-01-31'` has no time component, so the engine promotes it to `2026-01-31 00:00:00` in order to compare it with a timestamp column. The predicate becomes `created_at <= '2026-01-31 00:00:00'`, and `18:45:10` on the 31st fails that test. Order 4 survives only because it landed exactly on midnight.
+
+The bug is silent. The query runs, returns plausible rows, and the missing revenue shows up months later when someone reconciles totals. It happens in every engine that has a timestamp or datetime type, and it happens whenever the column has a time part, even if that time part is "always midnight" today and stops being midnight after the next application change.
+
+### The tempting wrong fixes
+
+```sql
+-- Wrong fix 1: hardcode the last second of the day
+WHERE created_at BETWEEN '2026-01-01' AND '2026-01-31 23:59:59'
+```
+
+This drops any row with fractional seconds after `23:59:59.000`. On PostgreSQL (microsecond precision) and SQL Server `datetime2` (100 nanosecond precision) that is a real window. It also has to be rewritten by hand for months of different lengths.
+
+```sql
+-- Wrong fix 2: strip the time from the column
+WHERE CAST(created_at AS DATE) BETWEEN '2026-01-01' AND '2026-01-31'
+```
+
+This returns the right rows, but it wraps the column in a function, which prevents a normal B-tree index on `created_at` from being used for a range seek in most engines. On a large table that is the difference between milliseconds and a full scan. SQL Server is a partial exception, discussed below.
+
+## The fix: half-open ranges
+
+The reliable pattern is a closed lower bound and an open upper bound, where the upper bound is the first instant of the next period:
+
+```sql
+SELECT order_id, customer, created_at
+FROM orders
+WHERE created_at >= '2026-01-01'
+  AND created_at <  '2026-02-01';
+```
+
+Result:
+
+| order_id | customer | created_at |
+|---|---|---|
+| 2 | bob | 2026-01-01 00:00:00 |
+| 3 | carol | 2026-01-15 12:30:00 |
+| 4 | dave | 2026-01-31 00:00:00 |
+| 5 | erin | 2026-01-31 18:45:10 |
+
+This is correct for every precision, from whole days to nanoseconds, because there is no value that can fall between "the end of January 31" and "the start of February 1". It uses the index because the column is bare on the left side of both comparisons. And it composes cleanly: consecutive periods never overlap and never leave gaps, so a monthly report summed across twelve months equals the annual total.
+
+If the end date arrives as a parameter, compute the open bound from it rather than asking callers to pass "the day after":
+
+```sql
+-- PostgreSQL
+WHERE created_at >= DATE '2026-01-01'
+  AND created_at <  DATE '2026-01-31' + INTERVAL '1 day';
+
+-- MySQL
+WHERE created_at >= '2026-01-01'
+  AND created_at <  DATE_ADD('2026-01-31', INTERVAL 1 DAY);
+
+-- SQL Server
+WHERE created_at >= '20260101'
+  AND created_at <  DATEADD(DAY, 1, '20260131');
+
+-- Oracle
+WHERE created_at >= DATE '2026-01-01'
+  AND created_at <  DATE '2026-01-31' + 1;
+
+-- SQLite
+WHERE created_at >= '2026-01-01'
+  AND created_at <  DATE('2026-01-31', '+1 day');
+```
+
+The rule is simple enough to apply everywhere: for dates and timestamps, prefer `>= start AND < end_plus_one` over `BETWEEN`. Use `BETWEEN` only when the column is a pure `DATE` type with no time part and you want both endpoints included.
+
+## Dialect notes
+
+### PostgreSQL: date, timestamp and timestamptz
+
+PostgreSQL has three relevant types, and the promotion rules differ:
+
+- `date` column with a `'2026-01-31'` literal: both sides are dates, `BETWEEN` works exactly as expected and includes the 31st.
+- `timestamp` column: the literal is promoted to `timestamp '2026-01-31 00:00:00'`. This is the bug case above.
+- `timestamptz` column: the literal is interpreted in the session's `TimeZone` setting, then converted to UTC internally. The day boundary therefore moves with the session time zone.
+
+That last point is the edge case that catches distributed teams. Two people run the same query and get different row counts because one has `TimeZone = 'UTC'` and the other `'America/New_York'`. Make the zone explicit in the literal, or pin the session:
+
+```sql
+-- Explicit zone in the literal
+WHERE created_at >= TIMESTAMPTZ '2026-01-01 00:00:00 Europe/Berlin'
+  AND created_at <  TIMESTAMPTZ '2026-02-01 00:00:00 Europe/Berlin';
+
+-- Or pin the session for the report
+SET TimeZone = 'Europe/Berlin';
+```
+
+Daylight saving time adds one more subtlety. Adding `INTERVAL '1 day'` to a `timestamptz` moves the wall-clock day, so a day that contains a DST transition is 23 or 25 hours long, which is what a calendar report wants. Adding `INTERVAL '24 hours'` moves exactly 24 hours, which is not the same thing across a transition.
+
+PostgreSQL also has `BETWEEN SYMMETRIC`, which swaps the bounds when the first is larger than the second:
+
+```sql
+-- Standard BETWEEN: returns nothing because 2026-01-31 > 2026-01-01
+SELECT COUNT(*) FROM orders
+WHERE created_at BETWEEN '2026-01-31' AND '2026-01-01';
+
+-- SYMMETRIC: bounds are reordered, returns 3
+SELECT COUNT(*) FROM orders
+WHERE created_at BETWEEN SYMMETRIC '2026-01-31' AND '2026-01-01';
+```
+
+`SYMMETRIC` is handy for user-supplied ranges where you cannot guarantee ordering. It is a PostgreSQL extension and does not exist in the other engines.
+
+### PostgreSQL range types: daterange and tstzrange
+
+PostgreSQL has first-class range types that make the inclusive/exclusive distinction explicit in the value itself. The third argument to the constructor is a bounds string: `[` or `]` means inclusive, `(` or `)` means exclusive. The containment operator is `<@` ("is contained by"):
+
+```sql
+-- January as a half-open range: [2026-01-01, 2026-02-01)
+SELECT order_id, customer, created_at
+FROM orders
+WHERE created_at::date <@ daterange('2026-01-01', '2026-02-01', '[)');
+
+-- With time zones, using tstzrange
+SELECT order_id, customer, created_at
+FROM orders
+WHERE created_at::timestamptz <@ tstzrange(
+  '2026-01-01 00:00 Europe/Berlin',
+  '2026-02-01 00:00 Europe/Berlin',
+  '[)'
+);
+```
+
+`daterange` normalises to the half-open form internally: `daterange('2026-01-01', '2026-01-31', '[]')` is stored as `[2026-01-01, 2026-02-01)`. That is exactly the pattern recommended above, baked into the type.
+
+Ranges shine when the range itself lives in a table, for example a `promotions` table with a `valid_during tstzrange` column, and you want to find rows whose validity contains a given instant. They also support the `&&` overlap operator and exclusion constraints that prevent overlapping bookings. For a plain filter on a timestamp column, be aware that a B-tree index on the column is not always used for a `<@` predicate; check `EXPLAIN` and fall back to the two-comparison form if the plan shows a sequential scan.
+
+### MySQL: DATE() on the column kills the index
+
+MySQL promotes a `'2026-01-31'` string to `DATETIME '2026-01-31 00:00:00'` when comparing with a `DATETIME` or `TIMESTAMP` column, so it has the same inclusive-end bug. The widely copied fix is `DATE(created_at) BETWEEN ...`, and it is a performance trap:
+
+```sql
+-- Correct rows, but cannot use an index on created_at
+SELECT * FROM orders
+WHERE DATE(created_at) BETWEEN '2026-01-01' AND '2026-01-31';
+
+-- Correct rows, uses the index
+SELECT * FROM orders
+WHERE created_at >= '2026-01-01'
+  AND created_at <  '2026-02-01';
+```
+
+Run `EXPLAIN` on both: the first shows `type: ALL` (full scan), the second shows `type: range` with the index name. MySQL 8.0.13 and later do support functional indexes, so `CREATE INDEX idx_orders_day ON orders ((DATE(created_at)))` would rescue the first form, but that is an extra index to maintain for a problem the half-open form solves for free.
+
+One more MySQL note: `TIMESTAMP` columns are stored in UTC and converted using the session `time_zone` on read and write, while `DATETIME` columns are stored as given. The same time zone caveats as PostgreSQL `timestamptz` apply to `TIMESTAMP` columns.
+
+### SQL Server: datetime precision and date literals
+
+SQL Server has two behaviours worth knowing. First, the legacy `datetime` type has a precision of about 3.33 milliseconds, rounding to `.000`, `.003` or `.007`. The old workaround of using `'2026-01-31 23:59:59.999'` as an upper bound is broken by this: the value rounds up to `2026-02-01 00:00:00.000`, so the filter silently includes rows from the first instant of February. The `.997` variant avoids the rounding but fails on `datetime2` columns, which keep full precision. The half-open range makes the whole question go away.
+
+Second, the string `'2026-01-31'` is not unambiguous for the `datetime` type. Its interpretation depends on `SET DATEFORMAT` and the login's default language, and under some settings it is read as year-day-month. The `date` and `datetime2` types always parse it as ISO. The only literal format that is safe across all date types and all language settings is the unseparated `'YYYYMMDD'`:
+
+```sql
+SELECT order_id, customer, created_at
+FROM orders
+WHERE created_at >= '20260101'
+  AND created_at <  '20260201';
+```
+
+SQL Server is also the notable exception to the "function on the column kills the index" rule. The optimizer recognises `CAST(datetime_col AS DATE)` and can still perform an index seek on it:
+
+```sql
+-- Sargable in SQL Server, unlike most other engines
+SELECT * FROM orders
+WHERE CAST(created_at AS DATE) BETWEEN '20260101' AND '20260131';
+```
+
+It is convenient, but it is a SQL Server specific optimizer feature, and code that gets ported to PostgreSQL or MySQL will lose the index. The half-open form is portable and equally fast.
+
+### Oracle: DATE always has a time
+
+Oracle's `DATE` type stores a time component down to the second, so the same bug applies even though the type is called `DATE`. Use `DATE 'YYYY-MM-DD'` literals or `TO_DATE` with an explicit format mask, and add a day with plain arithmetic:
+
+```sql
+SELECT order_id, customer, created_at
+FROM orders
+WHERE created_at >= DATE '2026-01-01'
+  AND created_at <  DATE '2026-01-31' + 1;
+```
+
+Avoid `TRUNC(created_at) BETWEEN ...` unless you have a function-based index on `TRUNC(created_at)`. For `TIMESTAMP WITH TIME ZONE` columns, use `INTERVAL '1' DAY` instead of `+ 1` and the same zone considerations as PostgreSQL apply.
+
+### SQLite: dates are text, and text compares as text
+
+SQLite has no date type. Date values are usually stored as ISO 8601 text, and comparison is plain string comparison. That has two consequences:
+
+```sql
+-- Text comparison: '2026-01-31 18:45:10' > '2026-01-31' because it is longer,
+-- so this drops the 31st just like in the other engines
+SELECT * FROM orders
+WHERE created_at BETWEEN '2026-01-01' AND '2026-01-31';
+
+-- Half-open comparison works because ISO 8601 text sorts chronologically
+SELECT * FROM orders
+WHERE created_at >= '2026-01-01'
+  AND created_at <  '2026-02-01';
+```
+
+The second consequence is that the data must actually be in a single consistent ISO format. A table containing both `'2026-01-05'` and `'2026-1-5'`, or a mix of `T` and space separators, will sort incorrectly and no predicate can fix that after the fact. If dates are stored as Unix epoch integers instead, compare against `strftime('%s', '2026-02-01')` cast to integer, and the same half-open logic applies.
+
+## BETWEEN on numbers and strings
+
+The inclusive rule is the same for non-date types, and it is usually what you want for integers:
+
+```sql
+-- Returns orders with amount 45.50 through 120.00, both ends included
+SELECT order_id, amount FROM orders
+WHERE amount BETWEEN 45.50 AND 120.00;
+```
+
+Be careful with floating-point columns: `BETWEEN 0.1 AND 0.3` on a `FLOAT` column may not include a value that displays as `0.3`, because the stored binary value can be slightly above the literal. Use `NUMERIC` or `DECIMAL` for money.
+
+Strings are where `BETWEEN` gets surprising. The comparison is collation-driven, and the upper bound is a whole string, not a prefix:
+
+```sql
+-- Intended: names starting with A through M
+-- Actual: excludes 'Mia', because 'Mia' > 'M' in every collation
+SELECT customer FROM orders
+WHERE customer BETWEEN 'A' AND 'M';
+```
+
+Under a case-sensitive collation (PostgreSQL default, SQLite default, MySQL `_bin` and `_cs` collations, SQL Server `_CS_AS`) lowercase letters sort after uppercase, so `'alice'` and `'bob'` are outside `'A'` to `'M'` entirely. Under case-insensitive collations (the MySQL and SQL Server defaults) they are inside. For prefix ranges, use `LIKE 'A%'`, or the half-open form with the next letter: `customer >= 'A' AND customer < 'N'`.
+
+## Index use and sargability
+
+A predicate is sargable when the optimizer can turn it into an index range seek. Across every engine covered here, the rule is:
+
+| Predicate | Uses a B-tree index on the column? |
+|---|---|
+| `col BETWEEN a AND b` | Yes |
+| `col >= a AND col < b` | Yes |
+| `DATE(col) BETWEEN a AND b` | No (MySQL, PostgreSQL, Oracle without a function index) |
+| `CAST(col AS DATE) BETWEEN a AND b` | SQL Server yes; others no |
+| `TO_CHAR(col, 'YYYY-MM') = '2026-01'` | No |
+| `EXTRACT(YEAR FROM col) = 2026` | No |
+
+`BETWEEN` itself is perfectly index-friendly. The problem is never `BETWEEN`; it is the function that people wrap around the column to compensate for the inclusive upper bound. Fix the bound instead, and the function disappears.
+
+## A worked example end to end
+
+Suppose you need a monthly revenue report for January 2026, and the table has a few million rows with an index on `created_at`. Here is the query that is both correct and fast, in PostgreSQL:
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders (created_at);
+
+SELECT
+  DATE_TRUNC('month', created_at) AS month,
+  COUNT(*)                        AS order_count,
+  SUM(amount)                     AS revenue
+FROM orders
+WHERE created_at >= DATE '2026-01-01'
+  AND created_at <  DATE '2026-01-01' + INTERVAL '1 month'
+GROUP BY DATE_TRUNC('month', created_at);
+```
+
+Expected output on the sample data:
+
+| month | order_count | revenue |
+|---|---|---|
+| 2026-01-01 00:00:00 | 4 | 455.49 |
+
+The `DATE_TRUNC` in the select list and `GROUP BY` is fine: it runs after the index has already narrowed the rows. The `WHERE` clause keeps `created_at` bare, so `EXPLAIN` shows an index range scan. Using `INTERVAL '1 month'` instead of a literal February date means the same query works for any month by changing one value, including February in leap years.
+
+Compare that with the `BETWEEN '2026-01-01' AND '2026-01-31'` version, which would report 3 orders and 435.50 in revenue, off by exactly Erin's evening order. You can paste both versions into Chat2DB (download at https://chat2db.ai/download, or use the web version at https://app.chat2db.ai) and run them side by side against the sample table to see the difference, and use the built-in explain view to confirm both hit the index.
+
+## Summary
+
+- `BETWEEN a AND b` means `>= a AND <= b`. Both endpoints are included, in every engine.
+- For timestamp and datetime columns, `BETWEEN '2026-01-01' AND '2026-01-31'` excludes almost all of January 31. This is the single most common date filtering bug.
+- Use the half-open pattern: `col >= start AND col < next_period_start`. It is correct at any precision, composes across periods, and uses the index.
+- Do not wrap the column in `DATE()`, `TRUNC()`, `CAST()` or `TO_CHAR()` to work around the bug; that costs you the index everywhere except the SQL Server `CAST AS DATE` special case.
+- PostgreSQL `timestamptz` and MySQL `TIMESTAMP` bounds depend on the session time zone; make the zone explicit. PostgreSQL also offers `BETWEEN SYMMETRIC` and native `daterange` / `tstzrange` types with the `<@` operator.
+- SQL Server `datetime` rounds to 3 milliseconds, so `23:59:59.999` bounds leak into the next day; use `'YYYYMMDD'` literals and the half-open form.
+- SQLite compares date text lexically, which works only if every value is in the same ISO 8601 format.
+- On strings, `BETWEEN 'A' AND 'M'` excludes `'Mia'`; use `LIKE` or an open upper bound on the next letter.

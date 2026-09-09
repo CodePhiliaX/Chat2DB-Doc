@@ -1,0 +1,471 @@
+---
+title: "LeetCode SQL 50 Study Plan: Patterns to Master"
+description: "A topic-by-topic LeetCode SQL 50 study plan: the recurring query patterns in each group, MySQL and PostgreSQL solutions, a 2-week schedule and common errors."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 9, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# LeetCode SQL 50 Study Plan: Patterns to Master
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 9, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+
+The LeetCode SQL 50 study plan is a curated list of roughly fifty problems that LeetCode groups by topic, starting with plain `SELECT` statements and ending with string functions and regular expressions. It is the most common starting point for people preparing for data analyst, data engineer and backend interviews, because the problems are short, the judge is strict, and the topics map almost one-to-one onto what interviewers actually ask.
+
+The catch is that solving fifty problems one by one teaches you fifty answers. What you want instead is the dozen or so patterns that those fifty problems are built from. This guide walks through each topic group of the SQL 50, names the recurring patterns, and shows complete solutions in MySQL syntax (LeetCode's default engine) with notes on where PostgreSQL differs. All schemas below are original illustrations, not copies of the LeetCode tables, so you can create them in any database and experiment.
+
+## How the SQL 50 study plan is organised
+
+LeetCode splits the plan into seven groups. The counts vary slightly as problems are swapped in and out, but the structure has been stable for years.
+
+| Group | Focus | Core patterns |
+|---|---|---|
+| Select | Filtering rows and columns | `WHERE`, `NULL` semantics, `DISTINCT` |
+| Basic Joins | Combining two tables | `INNER JOIN`, `LEFT JOIN`, anti join |
+| Basic Aggregate Functions | Summarising groups | `COUNT`, `SUM(CASE ...)`, `AVG` of a condition, `ROUND` |
+| Sorting and Grouping | Ordering and post-aggregation filters | `GROUP BY`, `HAVING`, `ORDER BY` with tie-breakers |
+| Advanced Select and Joins | Self joins, deletes, multi-step logic | Self join, consecutive rows, `DELETE` with join |
+| Subqueries | Nested and correlated queries | Top-N per group, window functions |
+| Advanced String Functions / Regex / Clause | Text and date manipulation | `CONCAT`, `SUBSTRING`, `GROUP_CONCAT`, `REGEXP`, `DATEDIFF` |
+
+The best way to approach the plan is to solve each group in order, but before opening a problem, write down which pattern you expect it to use. If the pattern you guessed does not work, that is the moment you learn something.
+
+## Illustrative schema used in this guide
+
+Every example below runs against this small set of tables. Create them once and you can test every query in the article.
+
+```sql
+CREATE TABLE departments (
+  dept_id   INT PRIMARY KEY,
+  dept_name VARCHAR(50)
+);
+
+CREATE TABLE employees (
+  emp_id     INT PRIMARY KEY,
+  name       VARCHAR(50),
+  dept_id    INT,
+  manager_id INT,
+  salary     DECIMAL(10,2),
+  hire_date  DATE
+);
+
+CREATE TABLE customers (
+  customer_id INT PRIMARY KEY,
+  name        VARCHAR(50),
+  email       VARCHAR(100),
+  referred_by INT
+);
+
+CREATE TABLE orders (
+  order_id    INT PRIMARY KEY,
+  customer_id INT,
+  order_date  DATE,
+  amount      DECIMAL(10,2),
+  status      VARCHAR(20)
+);
+
+CREATE TABLE logins (
+  user_id    INT,
+  login_date DATE
+);
+```
+
+## Group 1: Select
+
+The first group looks trivial, and most people rush through it. The one pattern that keeps coming back later, in disguise, is how `NULL` behaves in comparisons.
+
+### Filtering with NULL semantics
+
+Suppose you want every customer who was not referred by customer 3. The intuitive query is wrong.
+
+```sql
+-- Wrong: silently drops customers whose referred_by is NULL
+SELECT name FROM customers WHERE referred_by <> 3;
+```
+
+`NULL <> 3` evaluates to `NULL`, not `TRUE`, and `WHERE` only keeps rows where the condition is `TRUE`. The fix is to handle the `NULL` case explicitly.
+
+```sql
+SELECT name
+FROM customers
+WHERE referred_by <> 3 OR referred_by IS NULL;
+```
+
+MySQL also offers the null-safe operator `<=>`, so `NOT (referred_by <=> 3)` works. PostgreSQL uses `IS DISTINCT FROM 3` for the same idea. Both are worth knowing, but the `OR ... IS NULL` form is portable.
+
+### DISTINCT and simple projections
+
+Several early problems only ask you to return unique values or rename columns. The thing to practise is column aliasing, because the judge compares column names.
+
+```sql
+SELECT DISTINCT dept_id AS department
+FROM employees
+WHERE salary > 50000;
+```
+
+## Group 2: Basic Joins
+
+Join problems in the SQL 50 are mostly about direction: which table must keep all of its rows.
+
+### LEFT JOIN plus IS NULL as an anti join
+
+The classic task is "customers who have never placed an order". A `LEFT JOIN` keeps every customer, and the rows with no match have `NULL` in every order column.
+
+```sql
+SELECT c.name
+FROM customers c
+LEFT JOIN orders o ON o.customer_id = c.customer_id
+WHERE o.order_id IS NULL;
+```
+
+The equivalent with `NOT EXISTS` is often clearer and is what most interviewers prefer in production code.
+
+```sql
+SELECT c.name
+FROM customers c
+WHERE NOT EXISTS (
+  SELECT 1 FROM orders o WHERE o.customer_id = c.customer_id
+);
+```
+
+Avoid `NOT IN (SELECT customer_id FROM orders)` when the subquery column can contain `NULL`; a single `NULL` makes the whole `NOT IN` return no rows.
+
+### Counting with LEFT JOIN
+
+When the question is "number of orders per customer, including zeros", the `LEFT JOIN` must be paired with `COUNT(o.order_id)` rather than `COUNT(*)`. `COUNT(*)` counts the unmatched row as one.
+
+```sql
+SELECT c.customer_id, c.name, COUNT(o.order_id) AS order_count
+FROM customers c
+LEFT JOIN orders o ON o.customer_id = c.customer_id
+GROUP BY c.customer_id, c.name;
+```
+
+## Group 3: Basic Aggregate Functions
+
+This group introduces the two most reusable tricks in the whole plan: conditional aggregation and averaging a boolean.
+
+### Conditional aggregation with SUM(CASE ...)
+
+"For each department, how many employees earn above 60000 and how many do not?" There is no need for two queries.
+
+```sql
+SELECT
+  dept_id,
+  SUM(CASE WHEN salary > 60000 THEN 1 ELSE 0 END) AS high_earners,
+  SUM(CASE WHEN salary <= 60000 THEN 1 ELSE 0 END) AS other_earners
+FROM employees
+GROUP BY dept_id;
+```
+
+In MySQL a boolean expression evaluates to 1 or 0, so `SUM(salary > 60000)` is a valid shortcut. PostgreSQL requires the explicit `CASE`, or `COUNT(*) FILTER (WHERE salary > 60000)`, which is the cleanest form of all.
+
+### AVG of a boolean expression for rates
+
+Whenever a problem asks for a percentage or rate, the answer is usually the average of a 0/1 expression.
+
+```sql
+-- Share of orders that were cancelled, per customer
+SELECT
+  customer_id,
+  ROUND(AVG(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END), 2) AS cancel_rate
+FROM orders
+GROUP BY customer_id;
+```
+
+### ROUND and the integer division trap
+
+The judge checks decimals exactly. Two things go wrong repeatedly. First, `ROUND(x, 2)` must wrap the final expression, not an intermediate. Second, dividing two integers in PostgreSQL performs integer division, so `3 / 4` is `0`. MySQL returns `0.75`. Cast one side in PostgreSQL.
+
+```sql
+-- MySQL
+SELECT ROUND(COUNT(DISTINCT customer_id) / COUNT(*) * 100, 2) AS pct FROM orders;
+
+-- PostgreSQL
+SELECT ROUND(COUNT(DISTINCT customer_id)::numeric / COUNT(*) * 100, 2) AS pct FROM orders;
+```
+
+Also note that `AVG` ignores `NULL` values. If a column can be `NULL` and the problem says to treat missing values as zero, wrap it in `COALESCE(col, 0)` first.
+
+## Group 4: Sorting and Grouping
+
+### GROUP BY with HAVING
+
+`WHERE` filters rows before aggregation; `HAVING` filters groups after it. Problems in this group nearly always need `HAVING`.
+
+```sql
+-- Departments with at least three employees hired in 2025
+SELECT dept_id, COUNT(*) AS hires
+FROM employees
+WHERE hire_date >= '2025-01-01' AND hire_date < '2026-01-01'
+GROUP BY dept_id
+HAVING COUNT(*) >= 3;
+```
+
+Notice the date range written as a half-open interval instead of `YEAR(hire_date) = 2025`. Both pass the judge, but the range form uses an index in real databases.
+
+### ORDER BY with explicit tie-breakers
+
+If the problem says "order by count descending, then by name ascending", include both keys. Leaving out the secondary key is the single most common reason a correct-looking answer fails, because the judge compares row order when an `ORDER BY` is requested.
+
+```sql
+SELECT dept_id, COUNT(*) AS headcount
+FROM employees
+GROUP BY dept_id
+ORDER BY headcount DESC, dept_id ASC;
+```
+
+## Group 5: Advanced Select and Joins
+
+### Self join: employee and manager
+
+A self join treats one table as two. The alias names matter more than anything else here; call them what they represent.
+
+```sql
+SELECT e.name AS employee, m.name AS manager
+FROM employees e
+JOIN employees m ON m.emp_id = e.manager_id
+WHERE e.salary > m.salary;
+```
+
+### Self join for consecutive rows
+
+"Find users who logged in on two consecutive days" is a self join on the same user with a date offset.
+
+```sql
+SELECT DISTINCT a.user_id
+FROM logins a
+JOIN logins b
+  ON b.user_id = a.user_id
+ AND b.login_date = DATE_ADD(a.login_date, INTERVAL 1 DAY);
+```
+
+PostgreSQL writes the offset as `a.login_date + INTERVAL '1 day'`. For three or more consecutive rows the join chain gets long, and window functions (next group) are the better tool.
+
+### Deleting duplicates with a self join
+
+The dedup problem asks you to keep the row with the smallest id for each duplicate email. In MySQL the standard answer is a `DELETE` with a join.
+
+```sql
+DELETE c1
+FROM customers c1
+JOIN customers c2
+  ON c2.email = c1.email
+ AND c2.customer_id < c1.customer_id;
+```
+
+PostgreSQL does not allow the `DELETE alias FROM ... JOIN` form. Use `USING` instead.
+
+```sql
+DELETE FROM customers c1
+USING customers c2
+WHERE c2.email = c1.email
+  AND c2.customer_id < c1.customer_id;
+```
+
+## Group 6: Subqueries
+
+This is where most of the interview-grade material lives.
+
+### Top-N per group with window functions
+
+"Highest paid employee in each department" is the canonical problem. The pre-window approach uses a correlated subquery.
+
+```sql
+SELECT d.dept_name, e.name, e.salary
+FROM employees e
+JOIN departments d ON d.dept_id = e.dept_id
+WHERE e.salary = (
+  SELECT MAX(salary) FROM employees x WHERE x.dept_id = e.dept_id
+);
+```
+
+The window approach generalises to "top three per department" without changing shape.
+
+```sql
+SELECT dept_name, name, salary
+FROM (
+  SELECT
+    d.dept_name, e.name, e.salary,
+    DENSE_RANK() OVER (PARTITION BY e.dept_id ORDER BY e.salary DESC) AS rk
+  FROM employees e
+  JOIN departments d ON d.dept_id = e.dept_id
+) ranked
+WHERE rk <= 3;
+```
+
+### ROW_NUMBER, RANK and DENSE_RANK
+
+The three ranking functions differ only in how they handle ties, and the problem statement always tells you which behaviour it wants.
+
+| Function | Ties | Gaps after ties |
+|---|---|---|
+| `ROW_NUMBER()` | Broken arbitrarily (or by extra `ORDER BY` keys) | Never |
+| `RANK()` | Same rank | Yes (1, 1, 3) |
+| `DENSE_RANK()` | Same rank | No (1, 1, 2) |
+
+If the problem says "if there are ties, return all of them", use `DENSE_RANK`. If it says "the nth highest", it usually means `DENSE_RANK` as well, because duplicate salaries should count once.
+
+### LAG and LEAD for consecutive rows
+
+Returning to the consecutive logins problem: window functions let you look at the previous and next row without a self join.
+
+```sql
+SELECT DISTINCT user_id
+FROM (
+  SELECT
+    user_id,
+    login_date,
+    LAG(login_date, 1) OVER (PARTITION BY user_id ORDER BY login_date) AS prev_date,
+    LEAD(login_date, 1) OVER (PARTITION BY user_id ORDER BY login_date) AS next_date
+  FROM logins
+) t
+WHERE DATEDIFF(login_date, prev_date) = 1
+  AND DATEDIFF(next_date, login_date) = 1;
+```
+
+That query finds the middle day of any three-day streak. In PostgreSQL there is no `DATEDIFF`; subtracting two `DATE` values yields an integer number of days, so write `login_date - prev_date = 1`.
+
+### Scalar subqueries in the SELECT list
+
+A less common but useful pattern: computing one value for the whole result set inline.
+
+```sql
+SELECT name, salary,
+       salary - (SELECT AVG(salary) FROM employees) AS diff_from_avg
+FROM employees;
+```
+
+## Group 7: Advanced String Functions, Regex and Clause
+
+### CONCAT, UPPER, LOWER and SUBSTRING
+
+The "fix the capitalisation" problem type wants the first letter upper case and the rest lower case. Both engines support this pattern; only the substring function name differs slightly.
+
+```sql
+-- MySQL
+SELECT customer_id,
+       CONCAT(UPPER(LEFT(name, 1)), LOWER(SUBSTRING(name, 2))) AS name
+FROM customers
+ORDER BY customer_id;
+```
+
+PostgreSQL accepts `SUBSTRING(name FROM 2)` and also has `INITCAP(name)`, which does the whole job in one call.
+
+### GROUP_CONCAT and STRING_AGG
+
+"List every product a customer bought, comma-separated and sorted" is the aggregation-to-string pattern.
+
+```sql
+-- MySQL
+SELECT customer_id,
+       GROUP_CONCAT(DISTINCT status ORDER BY status SEPARATOR ',') AS statuses
+FROM orders
+GROUP BY customer_id;
+
+-- PostgreSQL
+SELECT customer_id,
+       STRING_AGG(DISTINCT status, ',' ORDER BY status) AS statuses
+FROM orders
+GROUP BY customer_id;
+```
+
+### REGEXP for validation
+
+Validating an email prefix or a phone format is the one regex problem in the plan. MySQL uses `REGEXP` (case-insensitive by default unless the collation is binary); PostgreSQL uses `~` for case-sensitive and `~*` for case-insensitive matching.
+
+```sql
+-- MySQL: email must start with a letter, then letters/digits/_ . -,
+-- and end with @example.com
+SELECT customer_id, email
+FROM customers
+WHERE email REGEXP '^[A-Za-z][A-Za-z0-9_.-]*@example\\.com$';
+
+-- PostgreSQL
+SELECT customer_id, email
+FROM customers
+WHERE email ~ '^[A-Za-z][A-Za-z0-9_.-]*@example\.com$';
+```
+
+The double backslash in MySQL is needed because the string literal is parsed before the regex engine sees it.
+
+### DATEDIFF and date arithmetic
+
+Date problems ask for things like "orders placed within 30 days of the customer's first order" or "rows where today's value exceeds yesterday's". Both reduce to date subtraction.
+
+```sql
+-- MySQL: first order per customer and how many days until their second
+SELECT customer_id,
+       MIN(order_date) AS first_order,
+       DATEDIFF(MAX(order_date), MIN(order_date)) AS span_days
+FROM orders
+GROUP BY customer_id
+HAVING COUNT(*) >= 2;
+```
+
+Other functions that show up: `DATE_FORMAT(order_date, '%Y-%m')` in MySQL versus `TO_CHAR(order_date, 'YYYY-MM')` in PostgreSQL for month bucketing, and `MONTH()`, `YEAR()` versus `EXTRACT(MONTH FROM ...)`.
+
+## A 2-week schedule
+
+Fifty problems in fourteen days is about four per day, which is sustainable if you time-box each problem to twenty minutes and read the editorial when the time runs out.
+
+| Day | Group | Goal |
+|---|---|---|
+| 1 | Select | All five problems; write the `NULL` rule on a card |
+| 2 | Basic Joins | Anti join with both `LEFT JOIN` and `NOT EXISTS` |
+| 3 | Basic Joins | Finish the group; re-solve day 2 from memory |
+| 4 | Basic Aggregate Functions | Conditional aggregation, `AVG` of a condition |
+| 5 | Basic Aggregate Functions | `ROUND` problems; also solve each in PostgreSQL |
+| 6 | Sorting and Grouping | `HAVING`; check every `ORDER BY` for tie-breakers |
+| 7 | Review | Re-solve any problem you looked up in week 1 |
+| 8 | Advanced Select and Joins | Self joins, manager and employee |
+| 9 | Advanced Select and Joins | Consecutive rows, `DELETE` dedup |
+| 10 | Subqueries | Top-N per group with correlated subquery |
+| 11 | Subqueries | Same problems with `DENSE_RANK`, then `LAG`/`LEAD` |
+| 12 | String Functions / Regex | `CONCAT`, `SUBSTRING`, `GROUP_CONCAT` |
+| 13 | String Functions / Regex | `REGEXP` and date arithmetic |
+| 14 | Mock | Pick ten random problems, forty minutes, no hints |
+
+## Common wrong answers and how to spot them
+
+Most failed submissions in the SQL 50 are not logic errors. They are one of these four.
+
+### Forgotten NULL rows
+
+Any time a problem says "who did not", "never", "without" or "missing", ask whether the column you filter on can be `NULL`. The `WHERE referred_by <> 3` example above is the archetype. The test: write down what the query returns for a row where the column is `NULL`, then check the expected output.
+
+### Wrong join direction
+
+If the expected output contains a row with `NULL` or `0` in the aggregated column, you need an outer join, and the table that must keep all its rows goes on the `LEFT`. Swapping the tables around an `INNER JOIN` changes nothing; swapping them around a `LEFT JOIN` changes everything.
+
+### DISTINCT hiding a fan-out
+
+When a join produces more rows than you expected and you "fix" it by adding `DISTINCT`, the counts and sums in the same query are still inflated. The fan-out usually comes from joining a one-to-many table before aggregating. Aggregate the many side in a subquery first, then join.
+
+```sql
+-- Correct: aggregate before joining so customers are not multiplied
+SELECT c.name, COALESCE(o.total, 0) AS total
+FROM customers c
+LEFT JOIN (
+  SELECT customer_id, SUM(amount) AS total
+  FROM orders
+  GROUP BY customer_id
+) o ON o.customer_id = c.customer_id;
+```
+
+### Missing ORDER BY tie-breakers
+
+If the problem specifies an order and your output differs only in the order of rows with equal keys, add the secondary key the problem mentions, or if it mentions none, the primary key. `ROW_NUMBER()` has the same issue: without a deterministic `ORDER BY` the numbering can vary between runs.
+
+## Practising outside the judge
+
+The LeetCode editor only tells you pass or fail. To understand why a query returns what it does, run it against your own copy of the schema where you can inspect intermediate results. Create the tables from this article in Chat2DB (download at https://chat2db.ai/download or use the web version at https://app.chat2db.ai), insert a few rows including some `NULL` values, and run each subquery on its own before assembling the final answer. If you do not want to install anything, the free in-browser SQL playground at https://chat2db.ai/tools/sql-playground runs SQLite in the browser with a sample schema, which covers everything here except `REGEXP` and `GROUP_CONCAT` ordering.
+
+## Summary
+
+The SQL 50 is fifty problems, but it is closer to twelve patterns: `NULL`-safe filtering, anti joins, conditional aggregation, `AVG` of a condition, `HAVING`, tie-broken ordering, self joins, `DELETE` with a join, correlated subqueries, ranking windows, `LAG`/`LEAD`, and a handful of string and date functions. Learn to recognise the pattern from the problem statement before writing a line of SQL, know the MySQL and PostgreSQL spelling of each, and check every submission against the four failure modes above. That is the whole study plan.

@@ -1,0 +1,445 @@
+---
+title: "HackerRank SQL Practice Guide: Basic to Advanced"
+description: "How HackerRank SQL is organised, how the judge compares output, the recurring patterns from Basic Select to Alternative Queries, and certification prep tips."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 9, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# HackerRank SQL Practice Guide: Basic to Advanced
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 9, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+
+HackerRank's SQL domain is a fixed set of around sixty problems that has barely changed in years, which is exactly why it is useful: the problems are well known, the judge is predictable, and companies that use HackerRank for screening draw on the same patterns. This guide explains how the domain is organised, how the output checker works, the query patterns that repeat across sections, and how the separate HackerRank SQL Certification differs from the practice problems.
+
+All schemas and solutions below are original. They illustrate the same patterns as the HackerRank problems without copying their tables or statements, so you can build them in any database and experiment freely.
+
+## How the HackerRank SQL domain is organised
+
+The domain has six sections, roughly in increasing difficulty.
+
+| Section | What it tests | Typical count |
+|---|---|---|
+| Basic Select | `WHERE`, `LIKE`, `DISTINCT`, `ORDER BY`, string functions | About 20 |
+| Advanced Select | `CASE`, pivots with `ROW_NUMBER`, string formatting | About 5 |
+| Aggregation | `SUM`, `AVG`, `ROUND`, `TRUNCATE`, `HAVING` | About 17 |
+| Basic Join | Two- and three-table joins, `BETWEEN` ranges | About 8 |
+| Advanced Join | Correlated subqueries, min-per-group, multi-level joins | About 5 |
+| Alternative Queries | Printing patterns, primes, recursion, `REPEAT` | About 3 |
+
+Each problem lets you pick an engine from a dropdown: MySQL, MS SQL Server, Oracle and DB2. Your choice matters. `TRUNCATE` as a numeric function exists in MySQL but not in SQL Server, where you would use `ROUND(x, 2, 1)`. `REPEAT` is MySQL; SQL Server uses `REPLICATE`. Recursive CTEs need `WITH RECURSIVE` in MySQL 8 but plain `WITH` in SQL Server and Oracle. Pick one engine and stay with it for the whole domain so that these differences become reflex.
+
+## How the judge compares output
+
+HackerRank does not compare result sets; it compares text. Your query's output is rendered as rows of space-separated values and diffed against the expected text. That has three consequences.
+
+First, ordering matters even when the problem does not seem to require it. If the expected output was generated with a specific `ORDER BY`, yours must match. When the statement says "order by X", include X. When it is silent, look at the sample output and reproduce the order you see.
+
+Second, formatting matters. A value expected as `12.50` will not match `12.5`. `ROUND` in MySQL produces `12.5` for a `DECIMAL` that happens to end in zero in some clients, so check the sample. If the expected output shows fixed decimals, `FORMAT` or casting to `DECIMAL(10,2)` may be needed.
+
+Third, rounding versus truncation matters. Problems that say "truncated to 2 decimal places" want `TRUNCATE(x, 2)` in MySQL; "rounded" wants `ROUND(x, 2)`. Using the wrong one produces a value that differs by 0.01 and fails.
+
+The practical habit: before writing SQL, read the sample output character by character and write down the ordering, the number of columns, the decimal places and any separators.
+
+## Illustrative schema
+
+The examples use these tables. Create them, insert a dozen rows, and every query in this article will run.
+
+```sql
+CREATE TABLE cities (
+  id           INT PRIMARY KEY,
+  name         VARCHAR(50),
+  country_code CHAR(3),
+  population   INT
+);
+
+CREATE TABLE countries (
+  code      CHAR(3) PRIMARY KEY,
+  name      VARCHAR(50),
+  continent VARCHAR(30)
+);
+
+CREATE TABLE students (
+  id    INT PRIMARY KEY,
+  name  VARCHAR(50),
+  marks INT
+);
+
+CREATE TABLE grades (
+  grade    INT PRIMARY KEY,
+  min_mark INT,
+  max_mark INT
+);
+
+CREATE TABLE staff (
+  name VARCHAR(50),
+  role VARCHAR(20)
+);
+
+CREATE TABLE triangles (
+  a INT, b INT, c INT
+);
+
+CREATE TABLE items (
+  id     INT PRIMARY KEY,
+  code   INT,
+  cost   INT,
+  power  INT
+);
+
+CREATE TABLE item_props (
+  code    INT PRIMARY KEY,
+  age     INT,
+  is_evil TINYINT
+);
+```
+
+## Basic Select patterns
+
+### LIKE and REGEXP for vowel problems
+
+A cluster of Basic Select problems ask for city names that start with a vowel, end with a vowel, both, or neither. `LIKE` handles single cases; `REGEXP` handles the combined ones in one expression.
+
+```sql
+-- Starts with a vowel (MySQL, case-insensitive under default collation)
+SELECT DISTINCT name FROM cities WHERE name REGEXP '^[aeiou]';
+
+-- Ends with a vowel
+SELECT DISTINCT name FROM cities WHERE name REGEXP '[aeiou]$';
+
+-- Starts and ends with a vowel
+SELECT DISTINCT name FROM cities WHERE name REGEXP '^[aeiou].*[aeiou]$';
+
+-- Does not start with a vowel
+SELECT DISTINCT name FROM cities WHERE name REGEXP '^[^aeiou]';
+
+-- Does not start OR does not end with a vowel
+SELECT DISTINCT name FROM cities WHERE name REGEXP '^[^aeiou]|[^aeiou]$';
+```
+
+In SQL Server there is no `REGEXP`; use `LIKE '[aeiou]%'` and `LIKE '%[aeiou]'`, since T-SQL's `LIKE` supports character classes. Oracle uses `REGEXP_LIKE(name, '^[aeiou]', 'i')`.
+
+The `DISTINCT` is there because the problems explicitly ask for unique names and the sample data has duplicates. Forgetting it is a common first failure.
+
+### ORDER BY with expressions
+
+Several problems sort by a computed value, such as name length, then break ties alphabetically.
+
+```sql
+-- Shortest name, then alphabetical; and longest name, then alphabetical
+(SELECT name, LENGTH(name) AS len FROM cities ORDER BY len ASC, name ASC LIMIT 1)
+UNION ALL
+(SELECT name, LENGTH(name) AS len FROM cities ORDER BY len DESC, name ASC LIMIT 1);
+```
+
+SQL Server replaces `LIMIT 1` with `SELECT TOP 1` and `LENGTH` with `LEN`. Oracle uses `FETCH FIRST 1 ROW ONLY`.
+
+### ORDER BY on a substring
+
+A well-known trick problem asks you to sort names by their last three characters, which is just `ORDER BY RIGHT(name, 3), id`. Another asks to print the name with the first letter of its role in parentheses, which is string concatenation.
+
+```sql
+SELECT CONCAT(name, '(', LEFT(role, 1), ')') AS label
+FROM staff
+ORDER BY name;
+```
+
+## Advanced Select patterns
+
+### Triangle classification with CASE
+
+Given three side lengths, classify the triangle. The order of the `CASE` branches matters: check validity first, then equilateral, then isosceles, then scalene.
+
+```sql
+SELECT
+  CASE
+    WHEN a + b <= c OR a + c <= b OR b + c <= a THEN 'Not A Triangle'
+    WHEN a = b AND b = c THEN 'Equilateral'
+    WHEN a = b OR b = c OR a = c THEN 'Isosceles'
+    ELSE 'Scalene'
+  END AS triangle_type
+FROM triangles;
+```
+
+If you test equilateral before validity, a row like (1, 1, 1) is fine, but (0, 0, 0) is misclassified. The judge's data includes such edge cases.
+
+### Occupation pivot with ROW_NUMBER
+
+The pivot problem gives a two-column table of names and roles and wants one column per role, with names listed alphabetically down each column and `NULL` where a column runs out. The pattern is: number the rows within each role, then group by that number.
+
+```sql
+SELECT
+  MAX(CASE WHEN role = 'Doctor'    THEN name END) AS Doctor,
+  MAX(CASE WHEN role = 'Professor' THEN name END) AS Professor,
+  MAX(CASE WHEN role = 'Singer'    THEN name END) AS Singer,
+  MAX(CASE WHEN role = 'Actor'     THEN name END) AS Actor
+FROM (
+  SELECT name, role,
+         ROW_NUMBER() OVER (PARTITION BY role ORDER BY name) AS rn
+  FROM staff
+) t
+GROUP BY rn
+ORDER BY rn;
+```
+
+`MAX` over a group where all but one value is `NULL` returns that one value, which is what makes the trick work. This runs on MySQL 8, SQL Server, Oracle and DB2 unchanged; on MySQL 5.7 (no window functions) you would need a user-variable counter, so check which version the judge runs.
+
+### Counting by role with a formatted sentence
+
+A companion problem asks for a sentence per role such as "There are a total of 3 doctors." The pattern is `CONCAT` over an aggregate, with `LOWER` on the role and a `COUNT` in the middle, ordered by count then name.
+
+```sql
+SELECT CONCAT('There are a total of ', COUNT(*), ' ', LOWER(role), 's.') AS line
+FROM staff
+GROUP BY role
+ORDER BY COUNT(*), role;
+```
+
+## Aggregation patterns
+
+### ROUND, TRUNCATE and the difference between them
+
+Aggregation problems in this section rarely need complex logic; they need the right numeric function. A typical task: the difference between the average of a column and the average of the same column with all zeros removed from the digits. The arithmetic is trivial; the point is `REPLACE` on a number and `CEIL` on the result.
+
+```sql
+SELECT CEIL(AVG(population) - AVG(REPLACE(population, '0', ''))) AS diff
+FROM cities;
+```
+
+Another asks for the sum of populations per continent, truncated. Note `TRUNCATE` here, not `ROUND`.
+
+```sql
+SELECT co.continent, TRUNCATE(AVG(ci.population), 0) AS avg_pop
+FROM cities ci
+JOIN countries co ON co.code = ci.country_code
+GROUP BY co.continent;
+```
+
+In SQL Server: `ROUND(AVG(ci.population), 0, 1)` truncates; `FLOOR` also works for positive values.
+
+### Euclidean and Manhattan distance
+
+A pair of problems ask for distances between the extreme points of a table. They are pure `MIN`/`MAX` with `ROUND` to a stated number of decimals.
+
+```sql
+SELECT ROUND(ABS(MIN(a) - MAX(a)) + ABS(MIN(b) - MAX(b)), 4) AS manhattan
+FROM triangles;
+
+SELECT ROUND(SQRT(POWER(MAX(a) - MIN(a), 2) + POWER(MAX(b) - MIN(b), 2)), 4) AS euclidean
+FROM triangles;
+```
+
+### Median without a MEDIAN function
+
+MySQL has no `MEDIAN`. The window-function version is the cleanest.
+
+```sql
+SELECT ROUND(AVG(population), 2) AS median_pop
+FROM (
+  SELECT population,
+         ROW_NUMBER() OVER (ORDER BY population) AS rn,
+         COUNT(*) OVER () AS cnt
+  FROM cities
+) t
+WHERE rn IN (FLOOR((cnt + 1) / 2), CEIL((cnt + 1) / 2));
+```
+
+The `IN` with `FLOOR` and `CEIL` handles both odd and even row counts in one expression. Oracle has `MEDIAN(population)` built in.
+
+### HAVING for post-aggregation filters
+
+"Countries whose total city population is above a threshold" and similar problems belong to `HAVING`.
+
+```sql
+SELECT co.name, SUM(ci.population) AS total_pop
+FROM countries co
+JOIN cities ci ON ci.country_code = co.code
+GROUP BY co.name
+HAVING SUM(ci.population) > 1000000
+ORDER BY total_pop DESC;
+```
+
+## Basic Join patterns
+
+### Range joins with BETWEEN
+
+The grade-table problem is the most instructive in this section. Students have marks; a second table maps mark ranges to grades. There is no equality key; the join condition is a range.
+
+```sql
+SELECT
+  CASE WHEN g.grade >= 8 THEN s.name ELSE NULL END AS name,
+  g.grade,
+  s.marks
+FROM students s
+JOIN grades g ON s.marks BETWEEN g.min_mark AND g.max_mark
+ORDER BY g.grade DESC, s.name ASC, s.marks ASC;
+```
+
+Two details trip people up. The name is hidden for low grades (a `CASE` in the `SELECT` list, not a filter). And the ordering has three keys: grade descending, then name, then marks for the rows where the name is `NULL`. Missing the third key produces correct rows in the wrong order, which the judge rejects.
+
+### Three-table joins with continent filters
+
+Joining cities to countries to filter by continent is a straightforward two-hop join. The pattern to notice is that the aggregate goes on the leaf table and the group key on the root.
+
+```sql
+SELECT co.continent, ROUND(AVG(ci.population)) AS avg_city_pop
+FROM cities ci
+JOIN countries co ON co.code = ci.country_code
+WHERE co.continent IN ('Asia', 'Africa')
+GROUP BY co.continent;
+```
+
+## Advanced Join patterns
+
+### The Ollivander's pattern: cheapest item per group
+
+The problem known as "Ollivander's Inventory" gives a table of items with a code, cost and power, and a properties table keyed by code with an age. You must return, for every combination of power and age, the item with the minimum cost, excluding items flagged as evil. The general pattern is min-per-group followed by a join back to fetch the full row.
+
+```sql
+SELECT i.id, p.age, i.cost, i.power
+FROM items i
+JOIN item_props p ON p.code = i.code
+WHERE p.is_evil = 0
+  AND i.cost = (
+    SELECT MIN(i2.cost)
+    FROM items i2
+    JOIN item_props p2 ON p2.code = i2.code
+    WHERE p2.is_evil = 0
+      AND p2.age = p.age
+      AND i2.power = i.power
+  )
+ORDER BY i.power DESC, p.age DESC;
+```
+
+The correlated subquery re-runs for every outer row, which is fine for HackerRank's data sizes. The window equivalent is one pass.
+
+```sql
+SELECT id, age, cost, power
+FROM (
+  SELECT i.id, p.age, i.cost, i.power,
+         ROW_NUMBER() OVER (PARTITION BY i.power, p.age ORDER BY i.cost) AS rn
+  FROM items i
+  JOIN item_props p ON p.code = i.code
+  WHERE p.is_evil = 0
+) t
+WHERE rn = 1
+ORDER BY power DESC, age DESC;
+```
+
+Both are correct. The correlated version is what most HackerRank editorials show; the window version is what you should be able to write in an interview.
+
+### Multi-level self join for hierarchies
+
+One Advanced Join problem asks you to count people at each level of a company hierarchy (a chain of five roles) and print one row per top-level entity. The pattern is joining the same hierarchy table repeatedly and using `COUNT(DISTINCT ...)` on each level, since a fan-out through the lower levels multiplies rows.
+
+```sql
+SELECT
+  l1.id,
+  l1.name,
+  COUNT(DISTINCT l2.id) AS level2_count,
+  COUNT(DISTINCT l3.id) AS level3_count
+FROM staff_l1 l1
+LEFT JOIN staff_l2 l2 ON l2.parent_id = l1.id
+LEFT JOIN staff_l3 l3 ON l3.parent_id = l2.id
+GROUP BY l1.id, l1.name
+ORDER BY l1.id;
+```
+
+Without `DISTINCT`, `level2_count` would be inflated by the number of level-3 rows under each level-2 row.
+
+## Alternative Queries patterns
+
+This section is small but contains the problems people remember.
+
+### Printing a pattern with REPEAT and recursion
+
+The classic asks you to print a decreasing pyramid of asterisks, one row per line. In MySQL 8 a recursive CTE generates the numbers and `REPEAT` builds each line.
+
+```sql
+WITH RECURSIVE n AS (
+  SELECT 20 AS k
+  UNION ALL
+  SELECT k - 1 FROM n WHERE k > 1
+)
+SELECT REPEAT('* ', k) AS line FROM n;
+```
+
+MySQL 5.7 has no recursive CTE; the older trick uses a user variable that decrements on each row of any table with enough rows, which is fragile and not worth memorising now that MySQL 8 is the judge default.
+
+SQL Server writes it as:
+
+```sql
+WITH n AS (
+  SELECT 20 AS k
+  UNION ALL
+  SELECT k - 1 FROM n WHERE k > 1
+)
+SELECT REPLICATE('* ', k) FROM n;
+```
+
+### Prime numbers with a recursive CTE
+
+Printing all primes up to 1000, ampersand-separated on one line, has a neat solution in SQL Server: generate candidates, filter with `NOT EXISTS` over smaller divisors, and stitch with `STRING_AGG`.
+
+```sql
+WITH nums AS (
+  SELECT 2 AS n
+  UNION ALL
+  SELECT n + 1 FROM nums WHERE n < 1000
+)
+SELECT STRING_AGG(n, '&') WITHIN GROUP (ORDER BY n)
+FROM nums a
+WHERE NOT EXISTS (
+  SELECT 1 FROM nums b WHERE b.n < a.n AND b.n > 1 AND a.n % b.n = 0
+)
+OPTION (MAXRECURSION 1000);
+```
+
+`OPTION (MAXRECURSION 1000)` is required because SQL Server defaults to a 100-level recursion limit. The MySQL 8 equivalent uses `WITH RECURSIVE`, `MOD(a.n, b.n)`, and `GROUP_CONCAT(n ORDER BY n SEPARATOR '&')`, and may need `SET SESSION cte_max_recursion_depth = 1001` for depth.
+
+## The HackerRank SQL Certification
+
+Separate from the practice domain, HackerRank offers skill certifications in SQL at Basic, Intermediate and Advanced levels. These are timed tests, typically two problems in around ninety minutes for the Basic level, taken in the browser with the same engine choice. Passing gives you a badge on your HackerRank profile. The questions rotate and are under a non-disclosure agreement, so this section describes only the shape of the exams.
+
+In general terms, the Basic certification stays within the material of the first three sections above: filtering, `CASE`, aggregation with `GROUP BY` and `HAVING`, `ORDER BY` and simple joins. Intermediate tends to involve multi-table joins, subqueries, and problems where the output format is part of the challenge, such as pivots or concatenated strings. Advanced draws on window functions, recursive CTEs and queries that combine several of the earlier patterns in one statement.
+
+To prepare, finish the practice domain first, then re-solve the Aggregation and Basic Join sections without looking anything up, because those are the closest match to certification difficulty. Practise under time pressure: set a timer, write the query, and check the output format against a sample you invent yourself. During the test, write the simplest query that produces the sample output, submit, and only then refine.
+
+## A study checklist
+
+Work through this in order. Each line is a pattern, not a problem; when you can write it from memory in under five minutes, tick it off.
+
+- `WHERE` with `LIKE` and `REGEXP` for start/end character classes
+- `DISTINCT` with `ORDER BY` on an expression and a tie-breaker
+- `CONCAT` with `LEFT`, `RIGHT`, `SUBSTRING`, `LOWER`, `UPPER`
+- Multi-branch `CASE` with correct branch order
+- Pivot with `ROW_NUMBER` partitioned by category and `MAX(CASE ...)`
+- `ROUND` versus `TRUNCATE`, and `CEIL`/`FLOOR`
+- `HAVING` after `GROUP BY`
+- Range join with `BETWEEN` and three-key `ORDER BY`
+- Min-per-group with a correlated subquery, then with `ROW_NUMBER`
+- `COUNT(DISTINCT ...)` across a multi-level join
+- Recursive CTE for number generation, `REPEAT`/`REPLICATE`
+- `STRING_AGG`/`GROUP_CONCAT` with an explicit order
+- One engine's spelling of each item above, memorised
+
+## Reading the expected output precisely
+
+Because the judge diffs text, the final skill is reading the sample output the way the checker does. A short procedure that catches most failures:
+
+1. Count the columns in the sample output and match them exactly. Extra helper columns fail the test.
+2. Note the order of rows. If two rows share the first sort key, find what orders them and add that key.
+3. Check decimals. Count the digits after the point and pick `ROUND`, `TRUNCATE` or `FORMAT` accordingly.
+4. Check for `NULL` rows. If the sample shows `NULL` in a column, you need an outer join or a `CASE`, not a filter.
+5. Check separators and casing in concatenated strings, including trailing spaces and punctuation.
+
+Run your query on your own copy of the data before submitting. If you want a local environment, create the tables from this article in Chat2DB (https://chat2db.ai/download, or the web version at https://app.chat2db.ai) and inspect intermediate subqueries; it connects to MySQL, SQL Server, Oracle and DB2, so you can test in whichever engine you chose on HackerRank. For a zero-install option, the free in-browser SQL playground at https://chat2db.ai/tools/sql-playground runs SQLite with a sample schema and is enough for everything in the Basic Select, Aggregation and Basic Join sections.
+
+## Summary
+
+HackerRank SQL rewards precision more than cleverness. The six sections reduce to about a dozen patterns: pattern filters, tie-broken ordering, `CASE` classification, `ROW_NUMBER` pivots, the right rounding function, `HAVING`, range joins, min-per-group, distinct counts through hierarchies and recursive number generation. Learn each pattern in one engine, read every sample output character by character, and the domain and the certification both become routine.

@@ -1,0 +1,429 @@
+---
+title: "SQL LIKE: Multiple Values and Case-Insensitive"
+description: "Match multiple values with SQL LIKE, make LIKE case-insensitive or case-sensitive in PostgreSQL, MySQL, SQL Server and SQLite, and use LIKE in CASE WHEN."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 9, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# SQL LIKE: Multiple Values and Case-Insensitive
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 9, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+
+`LIKE` is the first pattern-matching tool most people learn in SQL, and it is also the source of two questions that come up constantly: "how do I use LIKE with multiple values?" and "why is my LIKE case-sensitive in one database but not another?" This article answers both, with runnable examples for PostgreSQL, MySQL, SQL Server and SQLite, and finishes with the index implications you need to know before shipping a `LIKE '%term%'` query to production.
+
+## The sample table
+
+Every example below runs against this table. Create it in any of the four engines (the DDL is portable enough):
+
+```sql
+CREATE TABLE products (
+    id    INTEGER PRIMARY KEY,
+    name  VARCHAR(100) NOT NULL,
+    sku   VARCHAR(20)  NOT NULL
+);
+
+INSERT INTO products (id, name, sku) VALUES
+    (1, 'Apple iPhone 15',     'APL-IP15'),
+    (2, 'apple watch',         'APL-WT9'),
+    (3, 'Samsung Galaxy S24',  'SMS-GS24'),
+    (4, 'Google Pixel 8',      'GGL-PX8'),
+    (5, 'Sony WH-1000XM5',     'SNY-WH5'),
+    (6, 'Anker 100% Cable',    'ANK-C100'),
+    (7, 'Apple_Care Plus',     'APL-AC');
+```
+
+Note the deliberately awkward rows: row 2 is lower-case, row 6 contains a literal `%`, and row 7 contains a literal `_`.
+
+## LIKE syntax and wildcards
+
+`LIKE` compares a string against a pattern with two wildcards:
+
+| Wildcard | Meaning |
+|----------|---------|
+| `%` | Zero or more characters of any kind |
+| `_` | Exactly one character |
+
+```sql
+-- Names starting with 'Apple'
+SELECT id, name FROM products WHERE name LIKE 'Apple%';
+
+-- Names where the 6th character is a space and something follows
+SELECT id, name FROM products WHERE name LIKE '_____ %';
+
+-- Names containing 'Pixel' anywhere
+SELECT id, name FROM products WHERE name LIKE '%Pixel%';
+```
+
+The first query returns rows 1 and 7 in PostgreSQL (case-sensitive) and rows 1, 2 and 7 in MySQL with a default collation (case-insensitive). That difference is the subject of a later section; for now just remember that the same query can return different rows in different engines.
+
+### Escaping a literal percent or underscore
+
+If the value you are searching for contains `%` or `_`, you must escape it, otherwise `_` matches any character and `%` matches anything:
+
+```sql
+-- Wrong: matches 'Apple_Care Plus' AND anything like 'AppleXCare Plus'
+SELECT id, name FROM products WHERE name LIKE 'Apple_Care%';
+
+-- Right: ESCAPE picks an escape character, here a backslash
+SELECT id, name FROM products WHERE name LIKE 'Apple\_Care%' ESCAPE '\';
+
+-- Literal percent sign
+SELECT id, name FROM products WHERE name LIKE '%100\%%' ESCAPE '\';
+```
+
+`ESCAPE` is standard SQL and works in all four engines. Engine-specific notes:
+
+- MySQL treats backslash as the default escape character even without `ESCAPE`, but backslash is also the string-literal escape, so `'Apple\_Care%'` needs to be written as `'Apple\\_Care%'` unless `NO_BACKSLASH_ESCAPES` is on. Using an explicit `ESCAPE '!'` with `'Apple!_Care%'` avoids the confusion.
+- SQL Server additionally lets you wrap a wildcard in brackets: `LIKE 'Apple[_]Care%'`.
+- PostgreSQL also defaults to backslash as the escape character, but if `standard_conforming_strings` is on (the default), `'\_'` in a string literal is a plain two-character string, so the pattern works as written.
+
+## Why LIKE IN (...) does not exist
+
+The natural thing to write is:
+
+```sql
+-- Not valid SQL in any major engine
+SELECT * FROM products WHERE name LIKE IN ('Apple%', 'Sony%');
+```
+
+`IN` compares a value against a list using equality, and `LIKE` is a binary operator that takes exactly one pattern. Neither the SQL standard nor any of the big engines defines a `LIKE IN` form, so you need one of the alternatives below. They are ordered from most portable to most engine-specific.
+
+### Option 1: chained OR
+
+Works everywhere, reads clearly, and optimizers handle it well when the patterns have no leading wildcard.
+
+```sql
+SELECT id, name
+FROM   products
+WHERE  name LIKE 'Apple%'
+   OR  name LIKE 'Sony%'
+   OR  name LIKE 'Google%';
+```
+
+Result in PostgreSQL:
+
+| id | name |
+|----|------|
+| 1 | Apple iPhone 15 |
+| 4 | Google Pixel 8 |
+| 5 | Sony WH-1000XM5 |
+| 7 | Apple_Care Plus |
+
+The pitfall is operator precedence. `AND` binds tighter than `OR`, so this query does not do what it looks like:
+
+```sql
+-- Bug: the sku filter only applies to the last LIKE
+SELECT id, name FROM products
+WHERE  name LIKE 'Apple%' OR name LIKE 'Sony%' AND sku LIKE 'SNY%';
+```
+
+Always wrap the `OR` group in parentheses when combining it with other conditions.
+
+### Option 2: PostgreSQL LIKE ANY and ILIKE ANY
+
+PostgreSQL lets you apply any operator against every element of an array with `ANY` (at least one must match) or `ALL` (every pattern must match):
+
+```sql
+-- Case-sensitive, at least one pattern matches
+SELECT id, name
+FROM   products
+WHERE  name LIKE ANY (ARRAY['Apple%', 'Sony%', 'Google%']);
+
+-- Case-insensitive version
+SELECT id, name
+FROM   products
+WHERE  name ILIKE ANY (ARRAY['apple%', 'sony%', 'google%']);
+
+-- Rows that match none of the patterns
+SELECT id, name
+FROM   products
+WHERE  name NOT LIKE ALL (ARRAY['Apple%', 'Sony%']);
+```
+
+The `ILIKE ANY` query returns rows 1, 2, 4, 5 and 7. This is also the cleanest way to pass a list from application code, because a single array parameter replaces a variable number of `OR` branches.
+
+### Option 3: SIMILAR TO (PostgreSQL)
+
+`SIMILAR TO` is a standard-SQL hybrid of `LIKE` and regular expressions. It uses `%` and `_` like `LIKE` but adds alternation with `|` and grouping with parentheses:
+
+```sql
+SELECT id, name
+FROM   products
+WHERE  name SIMILAR TO '(Apple|Sony|Google)%';
+```
+
+It is case-sensitive, must match the whole string (there is no implicit `%` at the ends), and is generally slower than `LIKE` because PostgreSQL rewrites it to a regular expression internally. Most people prefer the regex operators directly.
+
+### Option 4: regular expressions
+
+Regex is the most flexible way to express "any of these values", and every engine except SQL Server has it built in.
+
+PostgreSQL uses `~` (case-sensitive) and `~*` (case-insensitive):
+
+```sql
+-- Starts with any of the three brands, ignoring case
+SELECT id, name FROM products WHERE name ~* '^(apple|sony|google)';
+```
+
+MySQL uses `REGEXP` (alias `RLIKE`), or `REGEXP_LIKE()` in MySQL 8 which accepts a match-type flag:
+
+```sql
+-- Case sensitivity follows the column collation by default
+SELECT id, name FROM products WHERE name REGEXP '^(Apple|Sony|Google)';
+
+-- Force case-sensitive with the 'c' flag, case-insensitive with 'i'
+SELECT id, name FROM products WHERE REGEXP_LIKE(name, '^(apple|sony|google)', 'c');
+SELECT id, name FROM products WHERE REGEXP_LIKE(name, '^(apple|sony|google)', 'i');
+```
+
+SQLite exposes a `REGEXP` operator but does not ship an implementation; calling it without loading an extension raises an error. Use chained `OR`, or `GLOB` for case-sensitive shell-style patterns.
+
+SQL Server has no regular-expression operator. You have three realistic choices:
+
+```sql
+-- 1. Chained LIKE (fine for short lists)
+SELECT id, name FROM products
+WHERE  name LIKE 'Apple%' OR name LIKE 'Sony%' OR name LIKE 'Google%';
+
+-- 2. Bracket character classes inside LIKE (single-character alternation only)
+SELECT id, name FROM products WHERE sku LIKE '[AS][PN][LY]-%';
+
+-- 3. PATINDEX, which returns the 1-based position of a pattern or 0
+SELECT id, name FROM products WHERE PATINDEX('%Pixel%', name) > 0;
+```
+
+`PATINDEX` accepts the same wildcards as `LIKE` plus the bracket classes, so it is useful when you need the match position, but it offers no alternation either.
+
+### Option 5: a lookup table joined with LIKE
+
+When the patterns live in data rather than in code (a list of blocked prefixes, a set of brand rules, a categorisation table), join against them. This is portable to every engine and lets you add or remove patterns without touching the query:
+
+```sql
+CREATE TABLE brand_patterns (
+    brand   VARCHAR(30),
+    pattern VARCHAR(50)
+);
+
+INSERT INTO brand_patterns VALUES
+    ('Apple',  'Apple%'),
+    ('Sony',   'Sony%'),
+    ('Google', 'Google%');
+
+SELECT DISTINCT p.id, p.name, b.brand
+FROM   products p
+JOIN   brand_patterns b ON p.name LIKE b.pattern
+ORDER  BY p.id;
+```
+
+Output (PostgreSQL):
+
+| id | name | brand |
+|----|------|-------|
+| 1 | Apple iPhone 15 | Apple |
+| 4 | Google Pixel 8 | Google |
+| 5 | Sony WH-1000XM5 | Sony |
+| 7 | Apple_Care Plus | Apple |
+
+Use `DISTINCT` or `EXISTS` if a product can match more than one pattern, otherwise the join duplicates rows. In SQL Server you can also generate the pattern list on the fly from a delimited string:
+
+```sql
+SELECT p.id, p.name
+FROM   products p
+WHERE  EXISTS (
+    SELECT 1
+    FROM   STRING_SPLIT('Apple%,Sony%,Google%', ',') s
+    WHERE  p.name LIKE s.value
+);
+```
+
+## Case sensitivity: it depends on the engine
+
+There is no single answer to "is SQL LIKE case-sensitive?" because the standard leaves it to the collation of the operands. Here is how each engine behaves by default and how to override it.
+
+### PostgreSQL: LIKE is case-sensitive, use ILIKE or LOWER()
+
+```sql
+-- Returns rows 1 and 7 only
+SELECT id, name FROM products WHERE name LIKE 'apple%';   -- nothing
+SELECT id, name FROM products WHERE name LIKE 'Apple%';   -- 1, 7
+
+-- Case-insensitive: ILIKE (PostgreSQL extension)
+SELECT id, name FROM products WHERE name ILIKE 'apple%';  -- 1, 2, 7
+
+-- Portable alternative
+SELECT id, name FROM products WHERE LOWER(name) LIKE 'apple%';
+```
+
+`ILIKE` is convenient but not portable. `LOWER(name) LIKE LOWER(:pattern)` works in every engine, at the cost of needing an expression index if you want it to use an index (see the performance section). Avoid mixing them: `ILIKE` on a column with a `C` collation and `LOWER()` on the same column can produce different results for non-ASCII characters.
+
+### MySQL: it depends on the collation
+
+MySQL compares strings using the column's collation. Collations ending in `_ci` are case-insensitive, `_cs` are case-sensitive, and `_bin` compare bytes. The MySQL 8 default is `utf8mb4_0900_ai_ci`, which is accent-insensitive and case-insensitive, so `LIKE 'apple%'` returns rows 1, 2 and 7.
+
+To force a case-sensitive match on a `_ci` column, override the collation for that comparison:
+
+```sql
+-- Case-sensitive on a case-insensitive column
+SELECT id, name FROM products
+WHERE  name COLLATE utf8mb4_0900_as_cs LIKE 'Apple%';   -- 1, 7
+
+-- Byte comparison, also case-sensitive
+SELECT id, name FROM products
+WHERE  name COLLATE utf8mb4_bin LIKE 'Apple%';
+
+-- Older syntax, still accepted in MySQL 8 but deprecated
+SELECT id, name FROM products WHERE name LIKE BINARY 'Apple%';
+```
+
+The reverse, a case-insensitive match on a `_bin` column, is `name COLLATE utf8mb4_0900_ai_ci LIKE 'apple%'`. Either way, a `COLLATE` clause on the column side usually prevents index use, so if one behaviour is the norm for that column, set the collation in the table definition instead.
+
+### SQL Server: also collation-driven, override with COLLATE
+
+Most SQL Server installations use a `_CI_AS` collation (case-insensitive, accent-sensitive) such as `SQL_Latin1_General_CP1_CI_AS`, so `LIKE` ignores case by default. Override per comparison the same way as MySQL:
+
+```sql
+-- Case-sensitive
+SELECT id, name FROM products
+WHERE  name COLLATE Latin1_General_CS_AS LIKE 'Apple%';   -- 1, 7
+
+-- Case-insensitive (explicit, useful on a CS database)
+SELECT id, name FROM products
+WHERE  name COLLATE Latin1_General_CI_AS LIKE 'apple%';   -- 1, 2, 7
+```
+
+Check the column's collation with `SELECT name, collation_name FROM sys.columns WHERE object_id = OBJECT_ID('products');` before assuming.
+
+### SQLite: case-insensitive for ASCII only
+
+SQLite's built-in `LIKE` ignores case, but only for the 26 ASCII letters. `LIKE 'apple%'` returns rows 1, 2 and 7; `LIKE 'é%'` would not match `'É'`. Two ways to change the behaviour:
+
+```sql
+-- Make LIKE case-sensitive for the rest of the connection
+PRAGMA case_sensitive_like = true;
+SELECT id, name FROM products WHERE name LIKE 'apple%';   -- nothing now
+
+-- GLOB is always case-sensitive and uses * and ? instead of % and _
+SELECT id, name FROM products WHERE name GLOB 'Apple*';   -- 1, 7
+```
+
+The pragma is per connection, which is a common source of "works on my machine" bugs when one code path sets it and another does not. Prefer `GLOB` or `LOWER()` when you need deterministic behaviour.
+
+### Summary table
+
+| Engine | Default LIKE | Case-insensitive | Case-sensitive |
+|--------|--------------|------------------|----------------|
+| PostgreSQL | Sensitive | `ILIKE`, `LOWER()`, `~*` | `LIKE`, `~` |
+| MySQL 8 | Follows collation (default `_ci`) | `_ci` collation | `COLLATE ..._cs` or `..._bin` |
+| SQL Server | Follows collation (usually `_CI`) | `COLLATE ..._CI_AS` | `COLLATE ..._CS_AS` |
+| SQLite | Insensitive (ASCII only) | default `LIKE` | `PRAGMA case_sensitive_like`, `GLOB` |
+
+## Using LIKE inside CASE WHEN
+
+`LIKE` is a boolean expression, so it can drive a `CASE` just like `=` or `>`. The typical use is deriving a category column from a text field:
+
+```sql
+SELECT id,
+       name,
+       CASE
+           WHEN name LIKE 'Apple%'   THEN 'Apple'
+           WHEN name LIKE 'Samsung%' THEN 'Samsung'
+           WHEN name LIKE 'Google%'  THEN 'Google'
+           WHEN name LIKE 'Sony%'    THEN 'Sony'
+           ELSE 'Other'
+       END AS brand
+FROM   products
+ORDER  BY id;
+```
+
+Output (PostgreSQL, case-sensitive):
+
+| id | name | brand |
+|----|------|-------|
+| 1 | Apple iPhone 15 | Apple |
+| 2 | apple watch | Other |
+| 3 | Samsung Galaxy S24 | Samsung |
+| 4 | Google Pixel 8 | Google |
+| 5 | Sony WH-1000XM5 | Sony |
+| 6 | Anker 100% Cable | Other |
+| 7 | Apple_Care Plus | Apple |
+
+Row 2 lands in `Other` because PostgreSQL `LIKE` is case-sensitive. Swap `LIKE` for `ILIKE` (or wrap `name` in `LOWER()` and lower-case the patterns) to fix it. `CASE` evaluates branches in order and stops at the first match, so put the most specific patterns first: if `'Apple%'` came after a broad `'%Plus%'` branch, row 7 would be labelled by the broad one.
+
+The same expression works in `GROUP BY` and aggregates:
+
+```sql
+SELECT CASE WHEN name ILIKE 'apple%' THEN 'Apple' ELSE 'Other' END AS brand,
+       COUNT(*) AS products
+FROM   products
+GROUP  BY 1;
+```
+
+MySQL and SQLite accept `GROUP BY 1`; in SQL Server repeat the full `CASE` expression in the `GROUP BY` clause.
+
+## Performance: what LIKE does to your indexes
+
+### Leading wildcards defeat B-tree indexes
+
+A B-tree index is sorted, so `LIKE 'Apple%'` can seek to the first entry starting with `Apple` and scan forward. `LIKE '%Apple%'` has no anchor, so the engine must read every row (or every index entry). The same is true for `LOWER(name) LIKE ...` unless there is an index on `LOWER(name)`. On a small table this does not matter; on a few million rows it is the difference between milliseconds and seconds.
+
+### PostgreSQL: text_pattern_ops and pg_trgm
+
+Two things trip people up in PostgreSQL. First, a plain B-tree index on a text column only supports `LIKE 'prefix%'` if the database uses the `C` collation. Under any other locale, create the index with `text_pattern_ops`:
+
+```sql
+CREATE INDEX products_name_pattern_idx ON products (name text_pattern_ops);
+
+-- Uses the index
+EXPLAIN SELECT id FROM products WHERE name LIKE 'Apple%';
+
+-- For case-insensitive prefix searches, index the lowered value
+CREATE INDEX products_name_lower_idx ON products (LOWER(name) text_pattern_ops);
+EXPLAIN SELECT id FROM products WHERE LOWER(name) LIKE 'apple%';
+```
+
+Second, for `%term%` searches and for `ILIKE` with any wildcard placement, use the `pg_trgm` extension with a GIN index. It breaks strings into three-character chunks and can satisfy `LIKE`, `ILIKE`, `~` and `~*`:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX products_name_trgm_idx ON products USING GIN (name gin_trgm_ops);
+
+EXPLAIN SELECT id FROM products WHERE name ILIKE '%pixel%';
+```
+
+The trigram index works best with search terms of three or more characters; a pattern like `'%a%'` still ends up scanning. GIN indexes are also larger and slower to update than B-trees, so measure write cost on hot tables.
+
+### MySQL: prefix matches use the index, otherwise consider FULLTEXT
+
+InnoDB uses a B-tree index for `LIKE 'Apple%'` as long as the column collation and the comparison collation match (an explicit `COLLATE` in the `WHERE` clause usually disables it). For `'%term%'` there is no index help. If the workload is really text search, a `FULLTEXT` index is the usual answer:
+
+```sql
+ALTER TABLE products ADD FULLTEXT INDEX products_name_ft (name);
+
+SELECT id, name
+FROM   products
+WHERE  MATCH(name) AGAINST('+pixel' IN BOOLEAN MODE);
+```
+
+Full-text search is word-based, not substring-based, so `'Pix'` will not find `'Pixel'` unless you use the `*` truncation operator, and very short words are dropped by `innodb_ft_min_token_size` (default 3). It is a different tool with different semantics, not a drop-in replacement for `LIKE`.
+
+### SQL Server and SQLite
+
+SQL Server behaves like MySQL: a prefix `LIKE` can seek an index, a leading `%` cannot, and `COLLATE` in the predicate turns the seek into a scan. Full-Text Search with `CONTAINS()` is the equivalent of MySQL `FULLTEXT`. SQLite's query planner uses an index for `LIKE 'prefix%'` only when the column has `TEXT` affinity and either `case_sensitive_like` is on or the index uses `COLLATE NOCASE`; the FTS5 extension covers substring-heavy workloads.
+
+## Checking your queries quickly
+
+The fastest way to see which of these behaviours applies to your database is to run the examples against it and compare row counts. A GUI client such as Chat2DB, which connects to PostgreSQL, MySQL, SQL Server and SQLite from one window, makes it easy to paste the same query into each connection and diff the results; you can download it at https://chat2db.ai/download or use the web version at https://app.chat2db.ai. Run `EXPLAIN` (or `EXPLAIN ANALYZE` in PostgreSQL, `EXPLAIN QUERY PLAN` in SQLite) on the final version to confirm that the index you expect is actually being used.
+
+## Key takeaways
+
+- `LIKE IN (...)` is not valid SQL. Use chained `OR`, `LIKE ANY (ARRAY[...])` in PostgreSQL, regex where available, or a joined pattern table.
+- Escape literal `%` and `_` with `ESCAPE`, and watch backslash handling in MySQL.
+- Case sensitivity is engine- and collation-specific: PostgreSQL `LIKE` is sensitive (use `ILIKE`), MySQL and SQL Server follow the collation (override with `COLLATE`), SQLite is insensitive for ASCII only.
+- `LIKE` works anywhere a boolean is expected, including `CASE WHEN`; order branches from most to least specific.
+- Leading wildcards prevent index seeks. Reach for `text_pattern_ops` and `pg_trgm` in PostgreSQL, or full-text indexes in MySQL and SQL Server, when substring search is on the critical path.

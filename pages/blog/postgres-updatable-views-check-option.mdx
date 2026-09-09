@@ -1,0 +1,427 @@
+---
+title: "PostgreSQL Views: Updatable Views and CHECK OPTION"
+description: "How to create a PostgreSQL view, when it is automatically updatable, WITH CHECK OPTION vs LOCAL and CASCADED, INSTEAD OF triggers, and security_invoker views."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 9, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# PostgreSQL Views: Updatable Views and CHECK OPTION
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 9, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+A PostgreSQL view is a stored query with a name. That description is accurate and also the reason most people underestimate views: they think of them as read-only shortcuts and miss that PostgreSQL lets you insert, update and delete through a view, constrain what those writes may contain, choose whose permissions the view runs with, and make the view a trustworthy security boundary. This guide covers `CREATE VIEW` from the basics through the parts that matter in a real application, using one running example: an `orders` table that each customer may only see and modify through a `my_orders` view.
+
+## CREATE VIEW basics
+
+The minimal form is `CREATE VIEW name AS query`. Set up the example schema first:
+
+```sql
+CREATE TABLE orders (
+    id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    customer    text        NOT NULL,   -- matches a database role name
+    status      text        NOT NULL DEFAULT 'new',
+    total       numeric(12,2) NOT NULL,
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+
+INSERT INTO orders (customer, status, total) VALUES
+    ('alice', 'new',     120.00),
+    ('alice', 'shipped',  45.50),
+    ('bob',   'new',     300.00);
+
+CREATE VIEW my_orders AS
+    SELECT id, status, total, created_at
+    FROM orders
+    WHERE customer = current_user;
+```
+
+`current_user` is evaluated when the view is queried, not when it is created, so each role sees its own rows. Views do not change the value of `current_user`; only privilege checks are affected by ownership, which we come to later. Create the two customer roles and grant them access to the view only, never to `orders` directly:
+
+```sql
+CREATE ROLE alice LOGIN;
+CREATE ROLE bob LOGIN;
+GRANT SELECT, INSERT, UPDATE, DELETE ON my_orders TO alice, bob;
+```
+
+You can name the output columns explicitly with a column list, which is useful when the query produces expressions:
+
+```sql
+CREATE VIEW order_summary (customer, order_count, revenue) AS
+    SELECT customer, count(*), sum(total)
+    FROM orders
+    GROUP BY customer;
+```
+
+`CREATE OR REPLACE VIEW` lets you change the definition in place while keeping the object's OID, grants and dependent views. It has strict limits that we cover in the "Views and column changes" section.
+
+## What makes a view automatically updatable
+
+Since PostgreSQL 9.3, a view is automatically updatable when its query is simple enough that the server can map each view row back to exactly one row of one base relation. The rules are:
+
+- Exactly one item in the `FROM` clause, and it must be a table or another updatable view. No joins, no subqueries in `FROM`.
+- No `WITH`, `DISTINCT`, `GROUP BY`, `HAVING`, `LIMIT` or `OFFSET` at the top level.
+- No `UNION`, `INTERSECT` or `EXCEPT`.
+- No aggregate functions, window functions or set-returning functions in the select list.
+
+Columns of the view that are plain references to base columns are updatable. Columns that are expressions (`total * 1.2`, `upper(status)`) are not, but since PostgreSQL 9.4 that does not stop the view as a whole from being updatable; you just cannot assign to those particular columns.
+
+`my_orders` satisfies every rule, so writes go straight through:
+
+```sql
+SET ROLE alice;
+
+INSERT INTO my_orders (status, total) VALUES ('new', 75.00);
+```
+
+```
+ERROR:  null value in column "customer" of relation "orders" violates not-null constraint
+DETAIL:  Failing row contains (4, null, new, 75.00, 2026-09-09 10:12:41.5+00).
+```
+
+This is the first thing to understand about writing through a view: the `INSERT` is rewritten into an `INSERT` on `orders`, and any base column that the view does not expose gets its default. `customer` has no default, so the insert fails. There are two fixes. Either expose `customer` in the view and let the client supply it, or give the base column a default that fills it in:
+
+```sql
+RESET ROLE;
+ALTER TABLE orders ALTER COLUMN customer SET DEFAULT current_user;
+
+SET ROLE alice;
+INSERT INTO my_orders (status, total) VALUES ('new', 75.00) RETURNING id;
+```
+
+```
+ id
+----
+  4
+```
+
+`UPDATE` and `DELETE` through the view apply the view's `WHERE` clause automatically, so alice can only touch her own rows:
+
+```sql
+UPDATE my_orders SET status = 'cancelled' WHERE id = 3;   -- bob's order
+```
+
+```
+UPDATE 0
+```
+
+No error, no effect, because row 3 is not visible through the view. When a view is not updatable, PostgreSQL says so clearly:
+
+```sql
+INSERT INTO order_summary VALUES ('carol', 0, 0);
+```
+
+```
+ERROR:  cannot insert into view "order_summary"
+DETAIL:  Views containing GROUP BY are not automatically updatable.
+HINT:  To enable inserting into the view, provide an INSTEAD OF INSERT trigger or an unconditional ON INSERT DO INSTEAD rule.
+```
+
+## WITH CHECK OPTION
+
+There is a hole in the example so far. alice cannot see bob's rows, and she cannot touch `orders` directly because she has no grants on it. But as soon as the view exposes the `customer` column, nothing stops her from inserting a row with `customer = 'bob'`, or running `UPDATE my_orders SET customer = 'bob'` on one of her own rows. Both writes succeed, and the affected rows simply vanish from her view and appear in bob's. `WITH CHECK OPTION` closes this: every row inserted or updated through the view must still satisfy the view's `WHERE` clause after the change.
+
+Recreate the view with the `customer` column exposed and the check option on. Dropping and recreating removes the grants, so they are repeated:
+
+```sql
+RESET ROLE;
+DROP VIEW my_orders;
+CREATE VIEW my_orders AS
+    SELECT id, customer, status, total, created_at
+    FROM orders
+    WHERE customer = current_user
+    WITH CHECK OPTION;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON my_orders TO alice, bob;
+
+SET ROLE alice;
+INSERT INTO my_orders (customer, status, total) VALUES ('bob', 'new', 10.00);
+```
+
+```
+ERROR:  new row violates check option for view "my_orders"
+DETAIL:  Failing row contains (5, bob, new, 10.00, 2026-09-09 10:15:03.2+00).
+```
+
+The same check applies to `UPDATE my_orders SET customer = 'bob'`. The view was dropped and recreated rather than replaced because `CREATE OR REPLACE VIEW` cannot insert a column in the middle of the list; that restriction is covered in the "Views and column changes" section.
+
+### LOCAL vs CASCADED
+
+The check option has two forms, and the difference only matters when a view is built on another view.
+
+- `WITH CASCADED CHECK OPTION` (the default when you write just `WITH CHECK OPTION`) checks the conditions of this view *and* every view beneath it, whether or not those lower views declared a check option themselves.
+- `WITH LOCAL CHECK OPTION` checks only this view's own condition, plus the conditions of lower views that have their own check option.
+
+A worked example:
+
+```sql
+RESET ROLE;
+CREATE VIEW open_orders AS
+    SELECT * FROM orders WHERE status <> 'cancelled';     -- no check option here
+
+CREATE VIEW big_open_orders_local AS
+    SELECT * FROM open_orders WHERE total >= 100
+    WITH LOCAL CHECK OPTION;
+
+CREATE VIEW big_open_orders_cascaded AS
+    SELECT * FROM open_orders WHERE total >= 100
+    WITH CASCADED CHECK OPTION;
+
+-- Row satisfies total >= 100 but not status <> 'cancelled'
+INSERT INTO big_open_orders_local    (customer, status, total) VALUES ('alice', 'cancelled', 500);
+INSERT INTO big_open_orders_cascaded (customer, status, total) VALUES ('alice', 'cancelled', 500);
+```
+
+```
+INSERT 0 1
+ERROR:  new row violates check option for view "open_orders"
+DETAIL:  Failing row contains (6, alice, cancelled, 500.00, 2026-09-09 10:16:20.9+00).
+```
+
+The `LOCAL` insert succeeds because only `total >= 100` was checked. The `CASCADED` insert fails, and note that the error names `open_orders`, the view whose condition was violated, not the view you inserted into. Unless you have a specific reason, use the default `CASCADED`; a view that accepts rows it cannot show is a bug waiting to be reported.
+
+## INSTEAD OF triggers for non-updatable views
+
+Joined views are the common case that is not automatically updatable. An `INSTEAD OF` trigger takes over the write and does whatever is appropriate. Extend the example with a `customers` table:
+
+```sql
+CREATE TABLE customers (
+    name   text PRIMARY KEY,
+    email  text NOT NULL
+);
+INSERT INTO customers VALUES ('alice', 'alice@example.com'), ('bob', 'bob@example.com');
+
+CREATE VIEW orders_with_email AS
+    SELECT o.id, o.customer, c.email, o.status, o.total
+    FROM orders o
+    JOIN customers c ON c.name = o.customer;
+```
+
+Writing to this view fails with `Views that do not select from a single table or view are not automatically updatable`. The trigger function receives `NEW` and `OLD` shaped like the view's rows and decides what to do with the base tables:
+
+```sql
+CREATE OR REPLACE FUNCTION orders_with_email_dml() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        INSERT INTO customers (name, email)
+        VALUES (NEW.customer, NEW.email)
+        ON CONFLICT (name) DO UPDATE SET email = EXCLUDED.email;
+
+        INSERT INTO orders (customer, status, total)
+        VALUES (NEW.customer, coalesce(NEW.status, 'new'), NEW.total)
+        RETURNING id INTO NEW.id;
+        RETURN NEW;
+
+    ELSIF TG_OP = 'UPDATE' THEN
+        UPDATE orders
+           SET status = NEW.status, total = NEW.total
+         WHERE id = OLD.id;
+        UPDATE customers SET email = NEW.email WHERE name = OLD.customer;
+        RETURN NEW;
+
+    ELSIF TG_OP = 'DELETE' THEN
+        DELETE FROM orders WHERE id = OLD.id;
+        RETURN OLD;
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+CREATE TRIGGER orders_with_email_iot
+    INSTEAD OF INSERT OR UPDATE OR DELETE ON orders_with_email
+    FOR EACH ROW EXECUTE FUNCTION orders_with_email_dml();
+
+INSERT INTO orders_with_email (customer, email, status, total)
+VALUES ('carol', 'carol@example.com', 'new', 42.00)
+RETURNING id;
+```
+
+```
+ id
+----
+  7
+```
+
+Three details matter. `INSTEAD OF` triggers must be `FOR EACH ROW`; statement-level is not allowed. For `INSERT` and `UPDATE` the function must return `NEW` (with `NEW.id` filled in if you want `RETURNING` to work), and for `DELETE` it must return `OLD`; returning `NULL` tells PostgreSQL the row was skipped, and the command tag will report zero rows. And `WITH CHECK OPTION` cannot be combined with `INSTEAD OF` triggers: once a trigger owns the write, PostgreSQL has no way to know which base rows resulted, so the check option is rejected at `CREATE VIEW` time.
+
+## Views as a security boundary
+
+### Definer semantics and row-level security
+
+By default a view runs with the privileges of its *owner*, not of the user querying it. That is what makes the `my_orders` pattern work: alice has no rights on `orders`, only on the view, and the view's owner (who does have rights on `orders`) is the one whose permissions are checked. This is the same idea as a `SECURITY DEFINER` function.
+
+The interaction with row-level security follows from that. If `orders` has RLS policies, they are evaluated for the view *owner*. Two consequences catch people out:
+
+1. If the view owner is also the table owner, RLS is bypassed entirely unless the table has `ALTER TABLE orders FORCE ROW LEVEL SECURITY`.
+2. Policies written in terms of `current_user` still see the invoking user (because `current_user` is not changed by the view), but the decision of *whether* policies apply at all is made for the owner.
+
+### security_invoker (PostgreSQL 15+)
+
+`security_invoker = true` flips the model: table privileges and RLS policies are checked against the user running the query.
+
+```sql
+ALTER VIEW my_orders SET (security_invoker = true);
+-- or at creation: CREATE VIEW ... WITH (security_invoker = true) AS ...
+```
+
+With this setting alice needs `SELECT` on `orders` itself, and any RLS policies on `orders` apply to her directly. This is the right choice when the view is a convenience over tables that already carry the correct RLS, and the wrong choice when the view is the only thing standing between the user and the table. Pick one model per view and document it. The running example relies on owner semantics, so if you tried the statement above, turn it back off with `ALTER VIEW my_orders RESET (security_invoker);` before continuing.
+
+### security_barrier and leaky functions
+
+A view with a `WHERE` filter is not, by itself, a reliable way to hide rows. The planner is free to evaluate a user's own cheap `WHERE` condition before the view's condition, which means a function in the user's query can see rows the view was meant to hide:
+
+```sql
+RESET ROLE;
+CREATE FUNCTION peek(text, numeric) RETURNS boolean
+LANGUAGE plpgsql COST 1 AS $$
+BEGIN
+    RAISE NOTICE 'saw customer % total %', $1, $2;
+    RETURN true;
+END;
+$$;
+GRANT EXECUTE ON FUNCTION peek TO alice;
+
+SET ROLE alice;
+SELECT id FROM my_orders WHERE peek(customer, total);
+```
+
+Depending on plan choice, the notices can include bob's rows, because `peek` was cheap enough that the planner ran it during the scan of `orders`, before the `customer = current_user` filter. The error is also a leak: a function that raises on certain values reveals whether those values exist.
+
+`security_barrier` tells the planner that the view's conditions must be applied first, and only functions marked `LEAKPROOF` (built-in operators like `=` on core types) may be pushed inside:
+
+```sql
+RESET ROLE;
+ALTER VIEW my_orders SET (security_barrier = true);
+```
+
+Rerun the query as alice and the notices show only her rows. The cost is that some user predicates can no longer be pushed down, which can make queries on the view slower; that is the correct trade for a view whose purpose is hiding data. The same guarantee is what row-level security policies give you automatically, which is why RLS is usually the better primary mechanism with a `security_barrier` view as a compatibility layer.
+
+## Views and column changes
+
+`CREATE OR REPLACE VIEW` is more restrictive than people expect. The new query must produce the same columns as the old one, in the same order, with the same names and types. It may add new columns at the end. Anything else fails:
+
+```sql
+CREATE OR REPLACE VIEW my_orders AS
+    SELECT id, status, total FROM orders WHERE customer = current_user;
+```
+
+```
+ERROR:  cannot drop columns from view
+```
+
+Renaming or retyping a column gives `cannot change name of view column "status" to "state"` (with a hint to use `ALTER VIEW ... RENAME COLUMN`, available since PostgreSQL 13) or `cannot change data type of view column "total" from numeric to text`. The reason is that other objects (views, functions, grants on specific columns) may depend on the existing column positions, and PostgreSQL will not silently break them.
+
+The other side of the same coin appears when you alter the base table:
+
+```sql
+ALTER TABLE orders ALTER COLUMN total TYPE double precision;
+```
+
+```
+ERROR:  cannot alter type of a column used by a view or rule
+DETAIL:  rule _RETURN on view my_orders depends on column "total"
+```
+
+You must drop the dependent views, alter the table, and recreate them, in one transaction so that nothing observes the gap. `DROP VIEW my_orders CASCADE` drops every view built on `my_orders` too, and it is easy to forget which those are. List them before you drop anything:
+
+```sql
+SELECT DISTINCT dependent.relname AS dependent_view
+FROM pg_depend d
+JOIN pg_rewrite r        ON r.oid = d.objid
+JOIN pg_class dependent  ON dependent.oid = r.ev_class
+JOIN pg_class source     ON source.oid = d.refobjid
+WHERE d.classid = 'pg_rewrite'::regclass
+  AND source.relname = 'orders'
+  AND dependent.relname <> 'orders';
+```
+
+Keep view definitions in version control and recreate them from there rather than from `pg_get_viewdef`, so the recreate step is a matter of replaying files.
+
+## Inspecting views
+
+`pg_views` lists definitions:
+
+```sql
+SELECT viewname, viewowner, definition
+FROM pg_views
+WHERE schemaname = 'public' AND viewname = 'my_orders';
+```
+
+`pg_get_viewdef('my_orders', true)` returns the pretty-printed query. In psql, `\d+ my_orders` shows the columns, the full definition and the view options, which is where `security_barrier` and `security_invoker` show up:
+
+```
+\d+ my_orders
+                          View "public.my_orders"
+   Column   |           Type           | ...
+------------+--------------------------+ ...
+ id         | bigint                   |
+ customer   | text                     |
+ ...
+View definition:
+ SELECT id, customer, status, total, created_at
+   FROM orders
+  WHERE customer = CURRENT_USER;
+Options: security_barrier=true, check_option=cascaded
+```
+
+You get the same information from the object tree in Chat2DB (download at https://chat2db.ai/download or use the web version at https://app.chat2db.ai), which is convenient when you need to compare view definitions across several databases.
+
+## Performance: views are inlined
+
+A view has no runtime cost of its own. When you query it, the rewriter substitutes the view's query as a subquery and the planner flattens it into the outer query wherever it legally can. For a simple view like `my_orders`, `SELECT * FROM my_orders WHERE id = 4` uses the primary key index on `orders` exactly as if you had written the query by hand. Check with `EXPLAIN`:
+
+```sql
+EXPLAIN SELECT * FROM my_orders WHERE id = 4;
+```
+
+```
+ Index Scan using orders_pkey on orders  (cost=0.15..8.17 rows=1 width=64)
+   Index Cond: (id = 4)
+   Filter: (customer = CURRENT_USER)
+```
+
+Where views cost you is when the view's query cannot be flattened. `DISTINCT`, `GROUP BY`, aggregates, `LIMIT`, set operations and window functions each form a boundary: the planner can push outer predicates through it only when doing so is provably safe (for example, a filter on a `GROUP BY` column can go below the aggregate, but a filter on the aggregate result cannot). A query like `SELECT * FROM order_summary WHERE customer = 'alice'` is fine, because `customer` is a grouping column; a view that groups all orders and then gets filtered on `revenue > 1000` must aggregate everything first. `security_barrier` adds a similar boundary for non-leakproof predicates. If a view is slow, look at the plan for a `Subquery Scan` or `HashAggregate` node sitting above the table scan with your filter applied on top of it; that is the sign that the filter did not get pushed down, and the fix is usually to move the filter into a parameter of a function or to restructure the view.
+
+## Temporary and recursive views
+
+`CREATE TEMP VIEW` creates a session-local view that disappears at disconnect. A view is also made temporary automatically if it references a temporary table, and PostgreSQL warns you when that happens. Temporary views are handy for breaking a long analysis into named steps without leaving objects behind.
+
+`CREATE RECURSIVE VIEW` is shorthand for a view over a recursive CTE. To walk an order-status history where each row points at its predecessor:
+
+```sql
+CREATE TABLE status_history (
+    id       int PRIMARY KEY,
+    order_id bigint,
+    prev_id  int REFERENCES status_history(id),
+    status   text
+);
+
+CREATE RECURSIVE VIEW status_chain (id, order_id, status, depth) AS
+    SELECT id, order_id, status, 1 FROM status_history WHERE prev_id IS NULL
+    UNION ALL
+    SELECT h.id, h.order_id, h.status, c.depth + 1
+    FROM status_history h JOIN status_chain c ON h.prev_id = c.id;
+```
+
+That is exactly equivalent to `CREATE VIEW status_chain AS WITH RECURSIVE status_chain(...) AS (...) SELECT ... FROM status_chain`, with the column list required.
+
+## View, materialized view or function
+
+A plain view is a saved query: always current, no storage, inlined into the caller's plan, and updatable under the rules above. A materialized view stores its result on disk, can be indexed, and is only as fresh as its last `REFRESH`; it is the right tool when the underlying query is expensive and slightly stale answers are acceptable, and the details are in [view vs materialized view](/blog/postgres-view-vs-materialized-view). A set-returning SQL function is the choice when the query needs parameters that a `WHERE` clause cannot express well, or when you want to hide the query text from callers; the price is that the planner treats a non-inlined function as a black box, so predicates from the caller cannot be pushed inside it.
+
+| | View | Materialized view | SQL function |
+|---|---|---|---|
+| Stored data | No | Yes | No |
+| Freshness | Always current | At last `REFRESH` | Always current |
+| Indexable | No (uses base indexes) | Yes | No |
+| Writable | Yes, if simple or with triggers | No | No |
+| Parameters | No | No | Yes |
+
+## Summary
+
+Use `CREATE VIEW` for the query, `WITH CHECK OPTION` whenever users can write through it, `INSTEAD OF` triggers when the view joins tables, and choose deliberately between owner (default) and `security_invoker` semantics. Add `security_barrier` when the view's filter is a security control rather than a convenience. Keep definitions in version control because `CREATE OR REPLACE` will not let you drop or reorder columns, and before any `DROP ... CASCADE`, query `pg_depend` to see what you are about to take with it.

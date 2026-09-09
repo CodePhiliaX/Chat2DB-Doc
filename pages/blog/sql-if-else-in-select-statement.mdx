@@ -1,0 +1,401 @@
+---
+title: "SQL IF ELSE in a SELECT: CASE, IIF and IF()"
+description: "How to write if else logic in SQL SELECT statements with CASE, MySQL IF(), SQL Server IIF and Oracle DECODE, plus NULL traps and performance notes by dialect."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 9, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# SQL IF ELSE in a SELECT: CASE, IIF and IF()
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 9, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+If you come from a procedural language, the first thing you reach for when you need conditional output from a query is `IF ... ELSE`. Standard SQL does not have that inside a `SELECT`. The portable answer is the `CASE` expression, and every major engine supports it. Several engines also ship shortcuts (`IF()` in MySQL, `IIF()` in SQL Server and SQLite, `DECODE` in Oracle) and separate procedural `IF` statements for stored code. This article walks through all of them, shows where `CASE` fits beyond the select list, and covers the NULL and performance traps that bite people in production.
+
+All examples use a small `orders` table:
+
+```sql
+CREATE TABLE orders (
+  order_id    INT PRIMARY KEY,
+  customer_id INT NOT NULL,
+  status      VARCHAR(20),
+  amount      DECIMAL(10, 2) NOT NULL,
+  country     VARCHAR(2)
+);
+
+INSERT INTO orders VALUES
+  (1, 101, 'paid',      120.00, 'US'),
+  (2, 101, 'refunded',   45.50, 'US'),
+  (3, 102, 'pending',    80.00, 'DE'),
+  (4, 103, 'paid',      310.00, 'FR'),
+  (5, 104, NULL,         19.99, 'US');
+```
+
+## Why there is no IF in a SQL SELECT
+
+SQL is declarative. A `SELECT` describes a result set, not a sequence of steps, so the language distinguishes between two things that procedural languages blur together:
+
+- A **statement** that controls flow (`IF ... THEN ... ELSE ... END IF`). This exists only in procedural extensions such as T-SQL, PL/pgSQL, PL/SQL and MySQL stored programs.
+- An **expression** that yields a value per row. This is `CASE`, and it can go anywhere an expression can go: the select list, `WHERE`, `ORDER BY`, `GROUP BY`, `HAVING`, inside aggregates, and in `UPDATE ... SET`.
+
+When people search for "if else in sql" they almost always want the second thing. So the rule of thumb is simple: inside a query, write `CASE`; inside a stored procedure or function body, use the dialect's `IF` statement.
+
+## The CASE expression: searched vs simple
+
+### Searched CASE
+
+The searched form evaluates arbitrary boolean conditions in order and returns the result of the first one that is true. If none match, it returns the `ELSE` value, or `NULL` when there is no `ELSE`.
+
+```sql
+SELECT
+  order_id,
+  amount,
+  CASE
+    WHEN amount >= 300 THEN 'large'
+    WHEN amount >= 100 THEN 'medium'
+    ELSE 'small'
+  END AS size_bucket
+FROM orders;
+```
+
+Order matters. Because `amount >= 300` is tested first, an order of 310 is labelled `large` even though it also satisfies `amount >= 100`.
+
+### Simple CASE
+
+The simple form compares one expression against a list of values using equality:
+
+```sql
+SELECT
+  order_id,
+  CASE status
+    WHEN 'paid'     THEN 'Complete'
+    WHEN 'refunded' THEN 'Reversed'
+    WHEN 'pending'  THEN 'Open'
+    ELSE 'Unknown'
+  END AS status_label
+FROM orders;
+```
+
+Simple `CASE` is shorter for pure value mapping, but it can only test equality. The moment you need a range, a `LIKE`, or a second column, switch to the searched form.
+
+### Result type rules
+
+All branches must resolve to a compatible type. Mixing `'N/A'` with a numeric branch will fail in PostgreSQL and SQL Server, and MySQL will silently coerce to a string. Cast explicitly when in doubt:
+
+```sql
+SELECT
+  order_id,
+  CASE
+    WHEN status = 'refunded' THEN -amount
+    ELSE amount
+  END AS signed_amount
+FROM orders;
+```
+
+Here both branches are `DECIMAL`, so the result column is `DECIMAL`.
+
+## Dialect-specific shortcuts
+
+### MySQL IF()
+
+MySQL has a three-argument `IF(condition, value_if_true, value_if_false)` function. It is compact but not portable, and it is easy to confuse with the `IF` statement in stored programs.
+
+```sql
+SELECT
+  order_id,
+  IF(amount >= 100, 'medium_or_large', 'small') AS size_bucket
+FROM orders;
+```
+
+MySQL also has `IFNULL(expr, fallback)` and the standard `COALESCE`, which are just `CASE WHEN expr IS NULL` in disguise.
+
+Inside a MySQL stored procedure, use the statement form:
+
+```sql
+DELIMITER //
+CREATE PROCEDURE classify_order(IN p_order_id INT, OUT p_label VARCHAR(20))
+BEGIN
+  DECLARE v_amount DECIMAL(10, 2);
+  SELECT amount INTO v_amount FROM orders WHERE order_id = p_order_id;
+
+  IF v_amount >= 300 THEN
+    SET p_label = 'large';
+  ELSEIF v_amount >= 100 THEN
+    SET p_label = 'medium';
+  ELSE
+    SET p_label = 'small';
+  END IF;
+END //
+DELIMITER ;
+```
+
+Note the keyword is `ELSEIF` (one word) in MySQL, and the block must close with `END IF`.
+
+### SQL Server IIF() and T-SQL IF ... ELSE
+
+SQL Server has `IIF(condition, true_value, false_value)`, which the engine rewrites into a `CASE` internally. It behaves exactly like a two-branch searched `CASE`.
+
+```sql
+SELECT
+  order_id,
+  IIF(amount >= 100, 'medium_or_large', 'small') AS size_bucket
+FROM orders;
+```
+
+For control flow in a batch or procedure, T-SQL uses `IF ... ELSE` with `BEGIN ... END` blocks:
+
+```sql
+DECLARE @total DECIMAL(10, 2);
+SELECT @total = SUM(amount) FROM orders WHERE country = 'US';
+
+IF @total > 150
+BEGIN
+  PRINT 'US revenue above threshold';
+END
+ELSE
+BEGIN
+  PRINT 'US revenue below threshold';
+END;
+```
+
+A common mistake is trying to use this statement form inside a `SELECT` list. It will not parse; use `CASE` or `IIF` there.
+
+### PostgreSQL CASE and PL/pgSQL IF
+
+PostgreSQL has no `IF()` or `IIF()` function. Use `CASE` in queries, and the `IF ... THEN ... ELSIF ... ELSE ... END IF` statement inside PL/pgSQL:
+
+```sql
+CREATE OR REPLACE FUNCTION order_size(p_amount NUMERIC)
+RETURNS TEXT
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF p_amount >= 300 THEN
+    RETURN 'large';
+  ELSIF p_amount >= 100 THEN
+    RETURN 'medium';
+  ELSE
+    RETURN 'small';
+  END IF;
+END;
+$$;
+
+SELECT order_id, order_size(amount) FROM orders;
+```
+
+The keyword is `ELSIF` in PL/pgSQL, not `ELSEIF`. In plain SQL you can also use a `DO` block for one-off procedural logic, but for anything that returns rows, `CASE` inside the query is faster and simpler than calling a function per row.
+
+### Oracle DECODE and CASE
+
+Oracle supports standard `CASE` and also the older `DECODE(expr, search1, result1, search2, result2, ..., default)` function:
+
+```sql
+SELECT
+  order_id,
+  DECODE(status, 'paid', 'Complete',
+                 'refunded', 'Reversed',
+                 'pending', 'Open',
+                 'Unknown') AS status_label
+FROM orders;
+```
+
+Two things make `DECODE` different from `CASE`. First, `DECODE` treats two `NULL` values as equal, so `DECODE(status, NULL, 'missing', 'present')` returns `'missing'` for a `NULL` status. `CASE status WHEN NULL` never matches. Second, `DECODE` can only compare for equality; searched conditions need `CASE`. For new code, prefer `CASE`; it is readable and portable. PL/SQL procedural code uses `IF ... THEN ... ELSIF ... ELSE ... END IF`, the same keywords as PL/pgSQL.
+
+### SQLite IIF()
+
+SQLite added `IIF(X, Y, Z)` in version 3.32.0 (May 2020). Older SQLite builds embedded in some runtimes will not recognise it, so `CASE` is the safer choice if you cannot control the library version:
+
+```sql
+SELECT
+  order_id,
+  IIF(amount >= 100, 'medium_or_large', 'small') AS size_bucket
+FROM orders;
+```
+
+SQLite has no procedural language at all, so there is no statement-level `IF`.
+
+## Syntax comparison by dialect
+
+| Engine | Expression in a query | Procedural statement | Notes |
+|---|---|---|---|
+| PostgreSQL | `CASE` only | `IF ... ELSIF ... ELSE ... END IF` (PL/pgSQL) | No `IF()` function |
+| MySQL | `CASE`, `IF(c, a, b)`, `IFNULL` | `IF ... ELSEIF ... ELSE ... END IF` | `IF()` function vs `IF` statement are different things |
+| SQL Server | `CASE`, `IIF(c, a, b)` | `IF ... ELSE` with `BEGIN ... END` | `IIF` is rewritten to `CASE` |
+| Oracle | `CASE`, `DECODE(...)`, `NVL`, `NVL2` | `IF ... ELSIF ... ELSE ... END IF` (PL/SQL) | `DECODE` treats NULL = NULL |
+| SQLite | `CASE`, `IIF(c, a, b)` (3.32+) | none | Check library version before using `IIF` |
+
+If you only remember one row of this table, remember that `CASE` works everywhere.
+
+## CASE outside the select list
+
+### CASE in WHERE
+
+You can put a `CASE` in `WHERE`, but usually you should not. Almost every `CASE` in a `WHERE` clause can be rewritten as plain boolean logic, and the boolean version lets the optimizer use indexes:
+
+```sql
+-- Hard for the optimizer: the column is wrapped in an expression
+SELECT * FROM orders
+WHERE CASE WHEN country = 'US' THEN amount >= 100 ELSE amount >= 50 END;
+
+-- Equivalent, sargable, index-friendly
+SELECT * FROM orders
+WHERE (country = 'US'  AND amount >= 100)
+   OR (country <> 'US' AND amount >= 50);
+```
+
+Note that the two forms differ when `country` is `NULL`: the `CASE` version falls into the `ELSE` branch, while the boolean version excludes the row because `NULL <> 'US'` is unknown. Add `OR country IS NULL` if you need identical behaviour.
+
+### CASE in ORDER BY
+
+A conditional sort key is one of the most useful `CASE` placements. This pushes pending orders to the top, then sorts the rest by amount descending:
+
+```sql
+SELECT order_id, status, amount
+FROM orders
+ORDER BY
+  CASE WHEN status = 'pending' THEN 0 ELSE 1 END,
+  amount DESC;
+```
+
+You can also use it to choose the sort column dynamically based on a parameter, although in that case the sort cannot use an index.
+
+### CASE in GROUP BY
+
+Grouping on a derived bucket is legal in every engine. SQL Server and Oracle require you to repeat the expression (or use a subquery or CTE); MySQL and PostgreSQL also accept the output alias:
+
+```sql
+SELECT
+  CASE WHEN amount >= 100 THEN 'big' ELSE 'small' END AS bucket,
+  COUNT(*)      AS order_count,
+  SUM(amount)   AS total_amount
+FROM orders
+GROUP BY CASE WHEN amount >= 100 THEN 'big' ELSE 'small' END;
+```
+
+Expected output:
+
+| bucket | order_count | total_amount |
+|---|---|---|
+| big | 2 | 430.00 |
+| small | 3 | 145.49 |
+
+### Conditional aggregates: the pivot pattern
+
+Wrapping `CASE` inside `SUM` or `COUNT` is how you build a pivot without a `PIVOT` clause, and it is portable across all five engines:
+
+```sql
+SELECT
+  customer_id,
+  SUM(CASE WHEN status = 'paid'     THEN amount ELSE 0 END) AS paid_total,
+  SUM(CASE WHEN status = 'refunded' THEN amount ELSE 0 END) AS refunded_total,
+  COUNT(CASE WHEN status = 'pending' THEN 1 END)             AS pending_count
+FROM orders
+GROUP BY customer_id
+ORDER BY customer_id;
+```
+
+Expected output:
+
+| customer_id | paid_total | refunded_total | pending_count |
+|---|---|---|---|
+| 101 | 120.00 | 45.50 | 0 |
+| 102 | 0.00 | 0.00 | 1 |
+| 103 | 310.00 | 0.00 | 0 |
+| 104 | 0.00 | 0.00 | 0 |
+
+The `COUNT` version deliberately omits `ELSE`. Without it, the non-matching rows produce `NULL`, and `COUNT` ignores `NULL`, so you get a count of matches. If you wrote `ELSE 0`, `COUNT` would count those zeros too and return the total row count. PostgreSQL also offers `COUNT(*) FILTER (WHERE status = 'pending')`, which reads better but is not portable.
+
+## NULL handling: the comparison that never matches
+
+The single most common `CASE` bug is testing for `NULL` with `=`:
+
+```sql
+-- Wrong: 'no status' is never returned
+SELECT order_id,
+  CASE WHEN status = NULL THEN 'no status' ELSE status END AS s
+FROM orders;
+
+-- Right
+SELECT order_id,
+  CASE WHEN status IS NULL THEN 'no status' ELSE status END AS s
+FROM orders;
+```
+
+`status = NULL` evaluates to unknown, not true, so the `WHEN` branch is skipped and the row falls into `ELSE`. The same applies to simple `CASE`: `CASE status WHEN NULL THEN ...` also never matches, because it is shorthand for `status = NULL`. Use a searched `CASE` with `IS NULL`, or `COALESCE(status, 'no status')` when you just want a fallback.
+
+The other NULL trap is a missing `ELSE`. A `CASE` with no `ELSE` returns `NULL` for unmatched rows. That is sometimes what you want (as in the `COUNT` example above), but in an `UPDATE ... SET col = CASE ...` it will overwrite values with `NULL` for every row that did not match a branch. Always add `ELSE col` in an update unless you intend to blank it out.
+
+## Nested CASE and readability
+
+`CASE` can be nested, and sometimes it must be:
+
+```sql
+SELECT
+  order_id,
+  CASE
+    WHEN country = 'US' THEN
+      CASE WHEN amount >= 100 THEN 'US-large' ELSE 'US-small' END
+    ELSE
+      CASE WHEN amount >= 50 THEN 'INTL-large' ELSE 'INTL-small' END
+  END AS segment
+FROM orders;
+```
+
+Two levels is usually the limit before the expression becomes hard to maintain. Alternatives when it grows:
+
+- Flatten into one searched `CASE` with compound conditions (`WHEN country = 'US' AND amount >= 100 THEN ...`). Since branches are evaluated in order, put the most specific conditions first.
+- Move the mapping into a lookup table and `JOIN` to it. Thresholds in a table can change without redeploying SQL.
+- Compute an intermediate column in a CTE, then apply a second `CASE` on that column in the outer query.
+
+If you have a long mapping to write, the free CASE builder at https://chat2db.ai/tools/sql-case-when-generator produces the boilerplate for you and lets you paste the result into Chat2DB (desktop at https://chat2db.ai/download, or the web version at https://app.chat2db.ai) to test it against your own data.
+
+## Performance notes
+
+### Short-circuit evaluation is not guaranteed
+
+The SQL standard says `CASE` branches are evaluated in order and evaluation stops at the first match, and in practice the engines follow that for ordinary expressions. But there are documented exceptions:
+
+- PostgreSQL may evaluate constant subexpressions during planning, before any row is seen. A guard such as `CASE WHEN x > 0 THEN 1 / x ELSE 0 END` is safe, but `CASE WHEN x > 0 THEN 1 / 0 END` can still raise a division error at plan time because `1 / 0` is a constant.
+- SQL Server does not guarantee ordered evaluation when `CASE` contains aggregates, or when the optimizer rewrites the query. The classic failure is `CASE WHEN ISNUMERIC(col) = 1 THEN CAST(col AS INT) END`, which can throw a conversion error for rows the `WHEN` should have filtered. Use `TRY_CAST` instead of relying on the branch order.
+- MySQL is generally sequential, but expressions inside aggregates can still be evaluated for every row.
+
+The safe posture: never rely on `CASE` to prevent an error in another branch when that branch involves constants, aggregates, or type conversions. Use `TRY_CAST`, `NULLIF`, or a `WHERE` filter instead.
+
+### Sargability in WHERE
+
+An index can be used only when the indexed column appears bare on one side of a comparison. `WHERE CASE WHEN ... END = 1` wraps the column in a function-like expression and forces a scan. Rewrite as boolean logic, as shown earlier. The same logic applies to `IF()` and `IIF()` in `WHERE`.
+
+### CASE in the select list is cheap
+
+A `CASE` that only touches columns already being read costs a few CPU cycles per row. It does not change the plan. Do not contort a query to avoid it. The expensive cases are `CASE` in `WHERE` on an indexed column, `CASE` in `JOIN` conditions, and `CASE` that calls a user-defined function per row.
+
+### Repeated CASE expressions
+
+If the same `CASE` appears in `SELECT`, `GROUP BY` and `ORDER BY`, most engines will evaluate it once per row per occurrence. It rarely matters, but for a heavy expression, compute it once in a subquery or CTE and reference the alias:
+
+```sql
+WITH bucketed AS (
+  SELECT
+    order_id,
+    amount,
+    CASE WHEN amount >= 100 THEN 'big' ELSE 'small' END AS bucket
+  FROM orders
+)
+SELECT bucket, COUNT(*) AS n, SUM(amount) AS total
+FROM bucketed
+GROUP BY bucket
+ORDER BY bucket;
+```
+
+## Summary
+
+- Inside a query, "if else" means `CASE`. It is standard, portable, and usable in the select list, `WHERE`, `ORDER BY`, `GROUP BY`, `HAVING`, aggregates, and `UPDATE`.
+- Use the simple `CASE` for equality mapping and the searched `CASE` for everything else. Branch order matters.
+- `IF()` (MySQL), `IIF()` (SQL Server, SQLite 3.32+) and `DECODE` (Oracle) are shortcuts for two-branch or equality-only logic. `DECODE` matches `NULL` to `NULL`; `CASE` does not.
+- Procedural `IF ... ELSE` exists only in stored code: T-SQL, PL/pgSQL, PL/SQL, MySQL stored programs. It cannot appear inside a `SELECT`.
+- Test for `NULL` with `IS NULL`, never `= NULL`. Add an `ELSE` in `UPDATE` statements.
+- Keep `CASE` out of `WHERE` on indexed columns, and do not rely on branch order to suppress conversion or constant-folding errors.
