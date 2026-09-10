@@ -1,0 +1,347 @@
+---
+title: "SQL UNION vs UNION ALL: Duplicates and Speed"
+description: "Learn the difference between UNION and UNION ALL, how duplicate rows are removed, column compatibility rules, ORDER BY placement, and which runs faster."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 10, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# SQL UNION vs UNION ALL: Duplicates and Speed
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 10, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+`UNION` and `UNION ALL` both stack the result of one `SELECT` on top of another, and that shared purpose is exactly why they get mixed up. The difference is one word and one extra step: `UNION` removes duplicate rows from the combined result, `UNION ALL` keeps everything. That extra step changes the answer you get, the way the database executes the query, and how much work it has to do. This article walks through both operators with a small dataset you can run in PostgreSQL, then covers the rules that trip people up: column compatibility, where `ORDER BY` and `LIMIT` go, how `NULL` is treated during deduplication, what the query planner does behind the scenes, and how to choose between the two.
+
+## Sample data
+
+Every query in this article runs against two tables that describe customers who signed up through different channels. Some people appear in both, which is what makes the duplicate question interesting.
+
+```sql
+CREATE TABLE web_customers (
+    email      text NOT NULL,
+    full_name  text,
+    country    text
+);
+
+CREATE TABLE store_customers (
+    email      text NOT NULL,
+    full_name  text,
+    country    text
+);
+
+INSERT INTO web_customers (email, full_name, country) VALUES
+    ('ana@example.com',   'Ana Lopez',    'ES'),
+    ('ben@example.com',   'Ben Carter',   'US'),
+    ('chen@example.com',  'Chen Wei',     'CN'),
+    ('dana@example.com',  'Dana Levy',    NULL),
+    ('ben@example.com',   'Ben Carter',   'US');   -- duplicate inside one table
+
+INSERT INTO store_customers (email, full_name, country) VALUES
+    ('ana@example.com',   'Ana Lopez',    'ES'),   -- same row as web
+    ('ben@example.com',   'Ben Carter',   'GB'),   -- same person, different country
+    ('erin@example.com',  'Erin Novak',   'PL'),
+    ('dana@example.com',  'Dana Levy',    NULL);   -- same row as web, NULL country
+```
+
+The syntax above is plain PostgreSQL. For MySQL, SQL Server and Oracle, replace `text` with `VARCHAR(100)` (Oracle: `VARCHAR2(100)`) and the rest works unchanged.
+
+## What UNION and UNION ALL do
+
+`UNION ALL` concatenates result sets. It returns every row from the first query followed by every row from the second, in whatever order the engine happens to produce them.
+
+```sql
+SELECT email, full_name, country FROM web_customers
+UNION ALL
+SELECT email, full_name, country FROM store_customers;
+```
+
+```text
+ email            | full_name  | country
+------------------+------------+---------
+ ana@example.com  | Ana Lopez  | ES
+ ben@example.com  | Ben Carter | US
+ chen@example.com | Chen Wei   | CN
+ dana@example.com | Dana Levy  |
+ ben@example.com  | Ben Carter | US
+ ana@example.com  | Ana Lopez  | ES
+ ben@example.com  | Ben Carter | GB
+ erin@example.com | Erin Novak | PL
+ dana@example.com | Dana Levy  |
+(9 rows)
+```
+
+Nine rows: five from `web_customers` plus four from `store_customers`. Nothing was inspected, nothing was dropped.
+
+`UNION` runs the same concatenation and then removes rows that are entirely identical.
+
+```sql
+SELECT email, full_name, country FROM web_customers
+UNION
+SELECT email, full_name, country FROM store_customers;
+```
+
+```text
+ email            | full_name  | country
+------------------+------------+---------
+ ana@example.com  | Ana Lopez  | ES
+ ben@example.com  | Ben Carter | US
+ ben@example.com  | Ben Carter | GB
+ chen@example.com | Chen Wei   | CN
+ dana@example.com | Dana Levy  |
+ erin@example.com | Erin Novak | PL
+(6 rows)
+```
+
+Six rows. Three disappeared: the second `Ben Carter / US` from `web_customers`, the `Ana Lopez / ES` copy from `store_customers`, and the `Dana Levy / NULL` copy. Notice that `Ben Carter` still appears twice, because `US` and `GB` make those two rows different.
+
+The row order in the `UNION` output also changed. That is a side effect of the deduplication step, not a guarantee. If you need a particular order, you must ask for it explicitly, which we cover below.
+
+## Duplicate removal is DISTINCT over the whole row
+
+The most useful mental model is this equivalence:
+
+```sql
+-- These two queries return the same rows
+SELECT email, full_name, country FROM web_customers
+UNION
+SELECT email, full_name, country FROM store_customers;
+
+SELECT DISTINCT * FROM (
+    SELECT email, full_name, country FROM web_customers
+    UNION ALL
+    SELECT email, full_name, country FROM store_customers
+) AS combined;
+```
+
+`UNION` is `UNION ALL` followed by `DISTINCT` on every column in the select list. Two consequences follow directly from that.
+
+First, `UNION` deduplicates across both inputs and within each input. The repeated `Ben Carter / US` row lived entirely inside `web_customers`, and `UNION` still collapsed it. If you only wanted to remove rows that overlap between the two sources, `UNION` is the wrong tool; you would need `EXCEPT` (`MINUS` in Oracle) or a join.
+
+Second, "duplicate" means every selected column matches. Selecting fewer columns changes what counts as a duplicate:
+
+```sql
+SELECT email FROM web_customers
+UNION
+SELECT email FROM store_customers;
+```
+
+```text
+ email
+------------------
+ ana@example.com
+ ben@example.com
+ chen@example.com
+ dana@example.com
+ erin@example.com
+(5 rows)
+```
+
+With only `email` in the select list, the two `Ben Carter` rows collapse into one. This is a common source of surprise in reports: adding a column to a `UNION` query can make the row count go up, because previously identical rows are now distinguishable.
+
+## Column count and type compatibility
+
+Set operators pair columns by position, not by name. Every `SELECT` in the chain must produce the same number of columns, and each position must hold types the database can reconcile.
+
+```sql
+-- Fails: the second query has two columns, the first has three
+SELECT email, full_name, country FROM web_customers
+UNION ALL
+SELECT email, full_name FROM store_customers;
+```
+
+PostgreSQL reports `ERROR: each UNION query must have the same number of columns`. MySQL says `The used SELECT statements have a different number of columns`, SQL Server says `All queries combined using a UNION, INTERSECT or EXCEPT operator must have an equal number of expressions in their target lists`, and Oracle raises `ORA-01789: query block has incorrect number of result columns`. The wording differs, the cause is the same.
+
+The fix is to pad the shorter query with a literal or `NULL`:
+
+```sql
+SELECT email, full_name, country FROM web_customers
+UNION ALL
+SELECT email, full_name, NULL FROM store_customers;
+```
+
+Column names in the final result come from the first `SELECT`. If the second query uses different aliases they are ignored, which matters when you later reference the column in `ORDER BY`.
+
+Type rules are looser but still real. PostgreSQL resolves each position to a common type using its `UNION` type-resolution rules: `integer` and `numeric` combine to `numeric`, `text` and an untyped literal combine to `text`, but `text` and `integer` do not combine at all:
+
+```sql
+-- Fails in PostgreSQL: UNION types text and integer cannot be matched
+SELECT email FROM web_customers
+UNION
+SELECT 42;
+```
+
+Cast explicitly when the types differ: `SELECT CAST(42 AS text)`. MySQL is more permissive and will silently convert numbers to strings; SQL Server follows data type precedence and will convert the string side to a number, which fails at runtime if a string like `'abc'` cannot be converted. Oracle is the strictest of the four and raises `ORA-01790: expression must have same datatype as corresponding expression` for most mismatches. Explicit casts are the portable answer.
+
+## ORDER BY and LIMIT with set operations
+
+A bare `ORDER BY` at the end of a `UNION` sorts the combined result, not the last branch:
+
+```sql
+SELECT email, full_name, country FROM web_customers
+UNION
+SELECT email, full_name, country FROM store_customers
+ORDER BY country NULLS LAST, email;
+```
+
+```text
+ email            | full_name  | country
+------------------+------------+---------
+ chen@example.com | Chen Wei   | CN
+ ana@example.com  | Ana Lopez  | ES
+ ben@example.com  | Ben Carter | GB
+ erin@example.com | Erin Novak | PL
+ ben@example.com  | Ben Carter | US
+ dana@example.com | Dana Levy  |
+(6 rows)
+```
+
+Two rules apply to that final `ORDER BY`. It may only reference output columns of the union (by the first query's names or by position), not arbitrary expressions or columns that were not selected. And `NULLS LAST` is PostgreSQL and Oracle syntax; in MySQL and SQL Server, `NULL` sorts first in ascending order by default, and you emulate `NULLS LAST` with something like `ORDER BY country IS NULL, country`.
+
+`LIMIT` (or `FETCH FIRST`, `TOP`, `ROWNUM`) at the end likewise applies to the whole union. This is the point where things go wrong for people who want to limit one branch. Consider "the three most recent web customers plus every store customer". Writing `LIMIT 3` at the end limits the total. Writing it directly on the first branch is a syntax error in PostgreSQL, because the parser cannot tell which query the clause belongs to. The solution is parentheses or a subquery:
+
+```sql
+(SELECT email, full_name, country FROM web_customers ORDER BY email LIMIT 3)
+UNION ALL
+(SELECT email, full_name, country FROM store_customers)
+ORDER BY email;
+```
+
+```text
+ email            | full_name  | country
+------------------+------------+---------
+ ana@example.com  | Ana Lopez  | ES
+ ana@example.com  | Ana Lopez  | ES
+ ben@example.com  | Ben Carter | US
+ ben@example.com  | Ben Carter | GB
+ ben@example.com  | Ben Carter | US
+ dana@example.com | Dana Levy  |
+ erin@example.com | Erin Novak | PL
+(7 rows)
+```
+
+The first branch is now sorted and limited on its own, then the outer `ORDER BY` sorts the combined seven rows. PostgreSQL and MySQL accept parenthesised branches. SQL Server does not allow parentheses around a `SELECT` with `ORDER BY` inside a union; wrap the branch as a derived table with `TOP` instead:
+
+```sql
+-- SQL Server
+SELECT email, full_name, country FROM (
+    SELECT TOP 3 email, full_name, country
+    FROM web_customers ORDER BY email
+) AS w
+UNION ALL
+SELECT email, full_name, country FROM store_customers;
+```
+
+Oracle uses the same derived-table approach with `FETCH FIRST 3 ROWS ONLY` (12c and later) inside the inline view.
+
+One more subtlety: a per-branch `ORDER BY` without a `LIMIT` is meaningless. The union has no obligation to preserve the order of its inputs, and `UNION` in particular will typically reshuffle rows during deduplication. Always put the ordering you actually need on the outside.
+
+## Performance: what the planner does
+
+Because `UNION` must find identical rows, it cannot simply stream the two inputs to the client. It has to either sort the combined rows and skip repeats, or build a hash table keyed on the whole row. `UNION ALL` needs neither. You can see the difference directly with `EXPLAIN` in PostgreSQL.
+
+```sql
+EXPLAIN
+SELECT email, full_name, country FROM web_customers
+UNION ALL
+SELECT email, full_name, country FROM store_customers;
+```
+
+```text
+Append  (cost=0.00..43.20 rows=1220 width=96)
+  ->  Seq Scan on web_customers  (cost=0.00..16.10 rows=610 width=96)
+  ->  Seq Scan on store_customers  (cost=0.00..16.10 rows=610 width=96)
+```
+
+The plan is just an `Append` node reading one table after the other. Rows flow straight through.
+
+```sql
+EXPLAIN
+SELECT email, full_name, country FROM web_customers
+UNION
+SELECT email, full_name, country FROM store_customers;
+```
+
+```text
+HashAggregate  (cost=52.35..64.55 rows=1220 width=96)
+  Group Key: web_customers.email, web_customers.full_name, web_customers.country
+  ->  Append  (cost=0.00..43.20 rows=1220 width=96)
+        ->  Seq Scan on web_customers  (cost=0.00..16.10 rows=610 width=96)
+        ->  Seq Scan on store_customers  (cost=0.00..16.10 rows=610 width=96)
+```
+
+The same `Append`, now wrapped in a `HashAggregate` whose group key is every output column. On larger inputs, or when `work_mem` is too small to hold the hash table, the planner may instead choose `Unique` on top of a `Sort`, which is the classic "UNION forces a sort" behaviour. Either way the cost has two extra components: the dedup operation itself, and the fact that the first row cannot be returned until all input rows have been consumed. The estimates above come from freshly created tables with no statistics, so the absolute numbers are meaningless; the shape of the plan is what to look at. Running both statements side by side in a client such as [Chat2DB](https://chat2db.ai/download) and comparing the visual plans makes the extra node hard to miss.
+
+MySQL implements `UNION` by writing the combined rows into a temporary table with a unique index over all columns, so every inserted row pays an index lookup, and the temporary table spills from memory to disk once it exceeds `tmp_table_size`. `UNION ALL` in MySQL 8 streams rows to the client without materialising them unless an outer `ORDER BY` requires it. `EXPLAIN` shows the difference as a `UNION RESULT` row with `Using temporary` for `UNION`.
+
+SQL Server shows a `Sort (Distinct Sort)` or `Hash Match (Union)` operator above the `Concatenation` operator for `UNION`, and plain `Concatenation` for `UNION ALL`. Oracle shows `SORT UNIQUE` above `UNION-ALL` in the plan for `UNION`, and just `UNION-ALL` otherwise. The pattern is universal: `UNION` is `UNION ALL` plus a distinct operator, and that operator is the whole performance story.
+
+There is one situation where `UNION` is not slower in any meaningful way: when the inputs are small. A hash aggregate over a few thousand rows finishes in a fraction of a millisecond. The gap opens up when inputs are large, wide, or both, since the dedup key is the full row and every byte of every row goes into the hash or sort.
+
+## NULL handling in deduplication
+
+In a `WHERE` clause, `NULL = NULL` is not true, so you might expect two rows with a `NULL` column to survive `UNION` as distinct rows. They do not. Set operations, like `DISTINCT` and `GROUP BY`, use "is not distinct from" semantics: two `NULL` values are treated as the same value for the purpose of matching rows.
+
+```sql
+SELECT email, country FROM web_customers   WHERE email = 'dana@example.com'
+UNION
+SELECT email, country FROM store_customers WHERE email = 'dana@example.com';
+```
+
+```text
+ email            | country
+------------------+---------
+ dana@example.com |
+(1 row)
+```
+
+Both source rows have `country = NULL`, and `UNION` collapses them to one. PostgreSQL, MySQL, SQL Server and Oracle all behave this way; it is required by the SQL standard. If you need `NULL`s to remain distinct, you have no set-operator option and would use `UNION ALL` with your own filtering logic.
+
+## When to prefer each
+
+Prefer `UNION ALL` when:
+
+- The inputs cannot overlap by construction, for example partitioned tables by date range, or a query that splits one table by a mutually exclusive `WHERE` clause. Deduplication would be pure waste.
+- Duplicates are meaningful. If you are combining event logs or sales lines, two identical rows are two real events and dropping one is a bug.
+- You will aggregate afterwards. `SELECT country, COUNT(*) FROM (... UNION ALL ...) GROUP BY country` needs every row; a `UNION` in the subquery would silently undercount.
+- Latency matters and you want the first rows immediately.
+
+Prefer `UNION` when:
+
+- The inputs genuinely overlap and the result must be a set, such as a list of distinct email addresses to notify.
+- You are building a lookup or reference list where repeated values would confuse the consumer.
+- The inputs are small enough that the dedup cost is negligible, and correctness of the set is more important than shaving a sort.
+
+A useful discipline is to write `UNION ALL` by default and switch to `UNION` only when you can explain which duplicates you expect and why they should go. The reverse habit, defaulting to `UNION`, hides bugs: a query that looks correct because the dedup step happens to cover for a join that produces extra rows.
+
+## Common errors and how to fix them
+
+`each UNION query must have the same number of columns`: the branches have different column counts. Pad with `NULL` or a literal, or trim the longer list. Count carefully when one branch uses `SELECT *` and the table has since gained a column.
+
+`UNION types text and integer cannot be matched`: a positional type conflict. Cast one side explicitly. If a column is `NULL` in one branch and typed in another, PostgreSQL usually infers the type, but a literal like `SELECT 0` versus `SELECT 'n/a'` will not reconcile.
+
+`column "x" does not exist` in the final `ORDER BY`: you referenced a column by a name that only exists in the second branch, or a column that is not in the select list. Use the first branch's name, a position number, or add the column to every branch.
+
+`syntax error at or near "UNION"` after a `LIMIT` or `ORDER BY`: you put `LIMIT` on a branch without parentheses. Wrap the branch, or move the limit to a derived table.
+
+Unexpectedly fewer rows than expected: you used `UNION` where `UNION ALL` was needed, or your select list omits the column that would have made rows distinct. Compare `COUNT(*)` from each branch with the count of the union.
+
+Unexpectedly slow query that was fine before: a `UNION` whose inputs have grown past the point where the hash table fits in memory. Check the plan for a `Sort` that has replaced `HashAggregate`, and ask whether `UNION ALL` would be correct.
+
+## Decision checklist
+
+Before you write `UNION`, run through these questions:
+
+1. Can the same row come from more than one branch, or more than once from a single branch? If no, use `UNION ALL`.
+2. If duplicates can occur, do they carry information (events, transactions, line items)? If yes, use `UNION ALL` and handle the semantics downstream.
+3. Does the consumer need a mathematical set, such as distinct identifiers? If yes, `UNION` is the right expression of that intent.
+4. Are you going to `GROUP BY` or `COUNT` the result? If yes, use `UNION ALL` so aggregates see every row.
+5. Are the inputs large? If yes and you still need a set, consider whether deduplicating on a narrower key with `DISTINCT ON` or `GROUP BY` after a `UNION ALL` is cheaper than hashing the full row.
+6. Do you have an `ORDER BY` or `LIMIT`? Confirm it is on the outside and refers to output columns, and parenthesise any per-branch limits.
+7. Do all branches have the same number of columns in the same order with compatible types? Add explicit casts for anything that is not obviously identical.
+8. Have you checked the execution plan? A `HashAggregate`, `Sort`/`Unique`, `Using temporary`, `Distinct Sort` or `SORT UNIQUE` node above the append is the cost of `UNION`; make sure you are paying it on purpose.
+
+The short version: `UNION ALL` combines, `UNION` combines and deduplicates over the full row, and everything else, from the plan shape to the row count to the `NULL` behaviour, follows from that one distinction.

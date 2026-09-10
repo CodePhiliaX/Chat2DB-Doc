@@ -1,0 +1,414 @@
+---
+title: "Postgres Array Contains: Operators and Indexes"
+description: "A practical reference for querying PostgreSQL arrays: contains and overlap operators, ANY, array_length vs cardinality, GIN indexes and common errors."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 10, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# Postgres Array Contains: Operators and Indexes
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 10, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+Most questions about PostgreSQL arrays are not about declaring them. They are about asking "does this array contain that value", "does it contain all of these", "how many elements does it have", and "why is my index not used". This article is a working reference for those questions. Every example runs against one small table, so you can paste the statements into psql or [Chat2DB](https://app.chat2db.ai/) and see the same output.
+
+## Sample data
+
+```sql
+CREATE TABLE articles (
+  id    serial PRIMARY KEY,
+  title text NOT NULL,
+  tags  text[]
+);
+
+INSERT INTO articles (title, tags) VALUES
+  ('Indexing basics', ARRAY['postgres', 'index', 'performance']),
+  ('JSONB tips',      ARRAY['postgres', 'jsonb']),
+  ('Rust for DBAs',   ARRAY['rust', 'performance']),
+  ('Untagged draft',  '{}'),
+  ('Legacy import',   NULL),
+  ('Mixed bag',       ARRAY['postgres', NULL, 'sql']);
+```
+
+Three rows are deliberately awkward: an empty array, a NULL array, and a NULL element inside a non-NULL array. Those cases are where most array queries go wrong.
+
+## Containment and overlap: `@>`, `<@` and `&&`
+
+The three operators you will use most often treat arrays as sets. Order and duplicates do not matter to them.
+
+| Operator | Meaning | Example |
+| --- | --- | --- |
+| `a @> b` | `a` contains every element of `b` | `tags @> ARRAY['postgres']` |
+| `a <@ b` | `a` is contained by `b` | `ARRAY['postgres'] <@ tags` |
+| `a && b` | `a` and `b` share at least one element | `tags && ARRAY['jsonb', 'rust']` |
+
+Rows tagged `postgres`:
+
+```sql
+SELECT id, title FROM articles WHERE tags @> ARRAY['postgres'];
+```
+
+```text
+ id |      title
+----+-----------------
+  1 | Indexing basics
+  2 | JSONB tips
+  6 | Mixed bag
+```
+
+Rows tagged with ALL of `postgres` and `performance`:
+
+```sql
+SELECT id, title FROM articles WHERE tags @> ARRAY['postgres', 'performance'];
+```
+
+```text
+ id |      title
+----+-----------------
+  1 | Indexing basics
+```
+
+Rows tagged with ANY of `jsonb` or `rust`:
+
+```sql
+SELECT id, title FROM articles WHERE tags && ARRAY['jsonb', 'rust'];
+```
+
+```text
+ id |     title
+----+---------------
+  2 | JSONB tips
+  3 | Rust for DBAs
+```
+
+`<@` is `@>` with the operands swapped, useful for checking that an array only uses values from an allowed list: `tags <@ ARRAY['postgres', 'index', 'jsonb']`. The empty array is contained by everything, so `Untagged draft` passes that check. The NULL array never appears in any of these results, because an operator applied to NULL yields NULL and `WHERE` treats NULL as false.
+
+### Equality and ordering of whole arrays
+
+`=` compares element by element, in order, so two arrays with the same elements in different order are not equal:
+
+```sql
+SELECT ARRAY[1, 2] = ARRAY[2, 1]      AS same_order,
+       ARRAY[1, 2] @> ARRAY[2, 1]
+       AND ARRAY[2, 1] @> ARRAY[1, 2] AS same_set;
+```
+
+```text
+ same_order | same_set
+------------+----------
+ f          | t
+```
+
+`<`, `>`, `<=` and `>=` also work, comparing element by element with a shorter prefix sorting first, so `ARRAY[1, 2] < ARRAY[1, 2, 3]`. This ordering is what `ORDER BY tags` and a plain B-tree index on an array column use.
+
+## Single element checks: = ANY(arr)
+
+For "is this one value somewhere in the array" there is a second syntax:
+
+```sql
+SELECT id, title FROM articles WHERE 'postgres' = ANY(tags);
+```
+
+```text
+ id |      title
+----+-----------------
+  1 | Indexing basics
+  2 | JSONB tips
+  6 | Mixed bag
+```
+
+The result is identical to `tags @> ARRAY['postgres']`, so which should you use? They differ in three ways.
+
+### @> ARRAY['a'] versus 'a' = ANY(arr)
+
+1. **Index use.** `tags @> ARRAY['postgres']` can use a GIN index on `tags`. `'postgres' = ANY(tags)` cannot; the planner does not rewrite it. If you filter on an array column and want an index, write `@>`.
+2. **Where `= ANY` does get indexed.** `= ANY` shines when the array is on the right and an indexed scalar column is on the left: `WHERE id = ANY(ARRAY[3, 7, 42])`. That uses the ordinary B-tree on `id` and is the idiomatic way to pass a list of ids from application code instead of building an `IN (...)` string.
+3. **Operators other than equality.** `ANY` and `ALL` accept any operator: `'post%' LIKE ANY(tags)`, `5 < ALL(scores)`, `x <> ALL(banned)`. `@>` only does equality.
+
+So: array column on the left, use `@>`, `<@` or `&&`. Scalar column on the left and a list of constants on the right, use `= ANY`.
+
+## Array length: array_length versus cardinality
+
+This is the most common surprise in the whole topic.
+
+```sql
+SELECT id, title,
+       array_length(tags, 1) AS array_length,
+       cardinality(tags)     AS cardinality
+FROM articles
+ORDER BY id;
+```
+
+```text
+ id |      title      | array_length | cardinality
+----+-----------------+--------------+-------------
+  1 | Indexing basics |            3 |           3
+  2 | JSONB tips      |            2 |           2
+  3 | Rust for DBAs   |            2 |           2
+  4 | Untagged draft  |              |           0
+  5 | Legacy import   |              |
+  6 | Mixed bag       |            3 |           3
+```
+
+`array_length(arr, 1)` returns the length of dimension 1. An empty array has no dimensions at all, so there is no dimension 1 to measure and the function returns NULL rather than 0. `cardinality(arr)` counts all elements across all dimensions and returns 0 for an empty array. Both return NULL for a NULL array. NULL elements are counted by both, which is why `Mixed bag` reports 3.
+
+For "how many tags does this row have" use `cardinality`. Use `array_length` only when you specifically care about one dimension of a multidimensional array.
+
+## Finding positions: array_position and array_positions
+
+```sql
+SELECT array_position(ARRAY['a', 'b', 'a'], 'a')  AS first_match,
+       array_positions(ARRAY['a', 'b', 'a'], 'a') AS all_matches,
+       array_position(ARRAY['a', 'b'], 'z')       AS missing;
+```
+
+```text
+ first_match | all_matches | missing
+-------------+-------------+---------
+           1 | {1,3}       |
+```
+
+Positions are 1-based by default. `array_position` returns NULL when nothing matches, and `array_positions` returns an empty array. Unlike `= ANY`, `array_position` uses `IS NOT DISTINCT FROM` semantics, so `array_position(ARRAY['a', NULL], NULL)` returns 2.
+
+## Converting: array_to_string, string_to_array, array_agg, unnest
+
+`array_to_string` joins elements with a delimiter. NULL elements are skipped unless you supply the optional third argument:
+
+```sql
+SELECT id,
+       array_to_string(tags, ', ')        AS joined,
+       array_to_string(tags, ', ', '(none)') AS joined_with_nulls
+FROM articles
+WHERE id IN (1, 4, 6)
+ORDER BY id;
+```
+
+```text
+ id |          joined           |     joined_with_nulls
+----+---------------------------+----------------------------
+  1 | postgres, index, performance | postgres, index, performance
+  4 |                           |
+  6 | postgres, sql             | postgres, (none), sql
+```
+
+`string_to_array` is the inverse: `string_to_array('postgres, index', ',')` gives `{postgres," index"}`, whitespace included, so trim before or after splitting. `unnest` turns an array into rows and `array_agg` turns rows back into an array. The pair handles anything the built-in operators cannot express, and it has its own article on this site, so here is just the round trip:
+
+```sql
+SELECT array_agg(tag ORDER BY tag) AS sorted_tags
+FROM unnest(ARRAY['postgres', 'index', 'performance']) AS tag;
+```
+
+```text
+        sorted_tags
+----------------------------
+ {index,performance,postgres}
+```
+
+## Modifying arrays: append, remove, concatenate, slice
+
+```sql
+SELECT array_append(ARRAY[1, 2], 3)         AS appended,
+       array_prepend(0, ARRAY[1, 2])        AS prepended,
+       array_remove(ARRAY[1, 2, 1], 1)      AS removed,
+       array_cat(ARRAY[1, 2], ARRAY[3, 4])  AS concatenated,
+       ARRAY[1, 2] || 3                     AS pipe_scalar,
+       ARRAY[1, 2] || ARRAY[3, 4]           AS pipe_array;
+```
+
+```text
+ appended | prepended | removed | concatenated | pipe_scalar | pipe_array
+----------+-----------+---------+--------------+-------------+------------
+ {1,2,3}  | {0,1,2}   | {2}     | {1,2,3,4}    | {1,2,3}     | {1,2,3,4}
+```
+
+`||` is overloaded: array-with-array concatenates, array-with-element appends, element-with-array prepends. `array_remove` removes every occurrence, not just the first. These functions return new values; use them in `UPDATE`:
+
+```sql
+UPDATE articles SET tags = array_append(tags, 'tutorial') WHERE id = 3;
+UPDATE articles SET tags = array_remove(tags, 'sql')      WHERE id = 6;
+```
+
+Slices use `[lower:upper]`, both bounds inclusive, and either bound may be omitted:
+
+```sql
+SELECT tags[1:2] AS first_two, tags[2:] AS from_second, tags[5] AS fifth
+FROM articles WHERE id = 1;
+```
+
+```text
+    first_two     |     from_second     | fifth
+------------------+---------------------+-------
+ {postgres,index} | {index,performance} |
+```
+
+An out-of-range subscript yields NULL, and an out-of-range slice yields an empty array; neither raises an error.
+
+## Multidimensional arrays and NULL elements
+
+Multidimensional arrays must be rectangular (`ARRAY[[1, 2], [3]]` is an error), `array_length(arr, 2)` gives the inner dimension, and `cardinality` counts every leaf. Two things routinely surprise people: `unnest` flattens all dimensions into a single stream of scalars, and subscripting with fewer indexes than there are dimensions returns NULL rather than a sub-array.
+
+```sql
+SELECT (ARRAY[[1, 2], [3, 4]])[1]      AS one_subscript,
+       (ARRAY[[1, 2], [3, 4]])[1:1]    AS one_slice,
+       (ARRAY[[1, 2], [3, 4]])[2][1]   AS full_subscript,
+       array_length(ARRAY[[1, 2], [3, 4]], 2) AS inner_len;
+```
+
+```text
+ one_subscript | one_slice | full_subscript | inner_len
+---------------+-----------+----------------+-----------
+               | {{1,2}}   |              3 |         2
+```
+
+NULL elements interact with the operators in two different ways. `= ANY` follows ordinary SQL three-valued logic: `'zzz' = ANY(ARRAY['a', NULL])` is NULL, not false, so `NOT ('zzz' = ANY(tags))` will silently drop `Mixed bag`. The containment operators assume the equality operator is strict and treat a NULL on the right side as something that can never be found:
+
+```sql
+SELECT ARRAY['a', NULL] @> ARRAY['a']            AS null_on_left,
+       ARRAY['a', NULL] @> ARRAY[NULL]::text[]   AS null_on_right,
+       ARRAY[NULL]::text[] = ARRAY[NULL]::text[] AS equality;
+```
+
+```text
+ null_on_left | null_on_right | equality
+--------------+---------------+----------
+ t            | f             | t
+```
+
+## Filtering on empty or NULL arrays
+
+Because `array_length` returns NULL for both an empty and a NULL array, `WHERE array_length(tags, 1) IS NULL` matches both cases at once, which is sometimes what you want and sometimes a bug. Be explicit:
+
+```sql
+-- only empty
+SELECT id, title FROM articles WHERE tags = '{}';
+-- only NULL
+SELECT id, title FROM articles WHERE tags IS NULL;
+-- empty or NULL
+SELECT id, title FROM articles WHERE coalesce(cardinality(tags), 0) = 0;
+-- has at least one tag
+SELECT id, title FROM articles WHERE cardinality(tags) > 0;
+```
+
+```text
+-- empty or NULL
+ id |     title
+----+----------------
+  4 | Untagged draft
+  5 | Legacy import
+```
+
+Remember that `NOT (tags && ARRAY['rust'])` does not return NULL-array rows either. If "no tags" should count as "not tagged rust", write `tags IS NULL OR NOT (tags && ARRAY['rust'])`.
+
+## Counting matches and ranking by overlap
+
+`&&` says at least one search tag matched, not how many. To count, unnest the row's tags in a correlated subquery:
+
+```sql
+WITH wanted AS (SELECT ARRAY['postgres', 'performance', 'sql'] AS tags)
+SELECT a.id, a.title,
+       (SELECT count(*) FROM unnest(a.tags) t WHERE t = ANY(w.tags)) AS matches
+FROM articles a, wanted w
+WHERE a.tags && w.tags
+ORDER BY matches DESC, a.id;
+```
+
+```text
+ id |      title      | matches
+----+-----------------+---------
+  1 | Indexing basics |       2
+  6 | Mixed bag       |       2
+  2 | JSONB tips      |       1
+  3 | Rust for DBAs   |       1
+```
+
+The `&&` in the `WHERE` clause is what lets a GIN index prune the candidate rows before the subquery runs.
+
+## Indexing with GIN
+
+A B-tree index on an array column only helps whole-array equality and ordering. For `@>`, `<@` and `&&` you need a GIN index, which indexes each element individually. The tiny table above will always be sequentially scanned, so generate enough rows for the planner to care:
+
+```sql
+INSERT INTO articles (title, tags)
+SELECT 'Generated ' || g,
+       ARRAY['tag' || (g % 500), 'tag' || (g % 37), 'common']
+FROM generate_series(1, 200000) AS g;
+
+ANALYZE articles;
+
+EXPLAIN SELECT id FROM articles WHERE tags @> ARRAY['tag123'];
+```
+
+Before the index (costs and row estimates omitted; yours will differ):
+
+```text
+Seq Scan on articles
+  Filter: (tags @> '{tag123}'::text[])
+```
+
+Create the index and run the same `EXPLAIN`:
+
+```sql
+CREATE INDEX articles_tags_gin ON articles USING gin (tags);
+
+EXPLAIN SELECT id FROM articles WHERE tags @> ARRAY['tag123'];
+```
+
+```text
+Bitmap Heap Scan on articles
+  Recheck Cond: (tags @> '{tag123}'::text[])
+  ->  Bitmap Index Scan on articles_tags_gin
+        Index Cond: (tags @> '{tag123}'::text[])
+```
+
+Now try the `= ANY` form:
+
+```sql
+EXPLAIN SELECT id FROM articles WHERE 'tag123' = ANY(tags);
+```
+
+```text
+Seq Scan on articles
+  Filter: ('tag123'::text = ANY (tags))
+```
+
+Same rows, same index available, no index use. This is the practical reason to standardise on `@>` for array column filters. Two more notes: the default `array_ops` class supports `@>`, `<@`, `&&` and `=`, and for `integer[]` the `intarray` extension provides a more compact `gin__int_ops`. And a search for a very common element (such as `'common'` above) may still be planned as a sequential scan because the index would return most of the table; that is the planner being right, not the index being ignored.
+
+## Common errors
+
+**`operator does not exist: text[] @> text`** — you wrote `tags @> 'postgres'`. Both sides of `@>` must be arrays: `tags @> ARRAY['postgres']` or `tags @> '{postgres}'`. If you meant a single element and do not need the index, `'postgres' = ANY(tags)` also works.
+
+**`malformed array literal: "postgres,index"`** — a string is being cast to an array without braces. Array literals look like `'{postgres,index}'`; use `string_to_array('postgres,index', ',')` when the data really is a delimited string.
+
+**`cannot determine type of empty array`** — `ARRAY[]` has no element type. Write `ARRAY[]::text[]` or `'{}'::text[]`.
+
+**`ARRAY types text and integer cannot be matched`** — mixed literal types in one constructor, such as `ARRAY['a', 1]`. Cast the elements to a common type.
+
+## Cheat sheet
+
+| Task | Expression | Empty array | NULL array | GIN index |
+| --- | --- | --- | --- | --- |
+| Contains all of | `arr @> ARRAY[...]` | false unless right side empty | NULL | yes |
+| Contained by | `arr <@ ARRAY[...]` | true | NULL | yes |
+| Shares any element | `arr && ARRAY[...]` | false | NULL | yes |
+| Contains one value | `val = ANY(arr)` | false | NULL | no |
+| Exact equality | `arr = ARRAY[...]` | compares | NULL | B-tree |
+| Element count | `cardinality(arr)` | 0 | NULL | |
+| Dimension length | `array_length(arr, 1)` | NULL | NULL | |
+| First position | `array_position(arr, val)` | NULL | NULL | |
+| All positions | `array_positions(arr, val)` | `{}` | NULL | |
+| Join to text | `array_to_string(arr, ',')` | `''` | NULL | |
+| Split from text | `string_to_array(txt, ',')` | | | |
+| Rows to array | `array_agg(col)` | | | |
+| Array to rows | `unnest(arr)` | no rows | no rows | |
+| Append / prepend | `arr \|\| val`, `val \|\| arr` | | | |
+| Concatenate | `arr1 \|\| arr2`, `array_cat` | | | |
+| Remove all of value | `array_remove(arr, val)` | | | |
+| Slice | `arr[1:2]`, `arr[2:]` | `{}` | NULL | |
+| Is empty | `arr = '{}'` or `cardinality(arr) = 0` | | | |
+| Is empty or NULL | `coalesce(cardinality(arr), 0) = 0` | | | |
+
+The rule of thumb that covers most cases: use `@>` and `&&` with a GIN index for filtering on an array column, `= ANY` for matching a scalar column against a list, `cardinality` for counts, and be explicit about NULL and empty arrays rather than relying on `array_length` to collapse them. When you are unsure which plan you are getting, running `EXPLAIN` in [Chat2DB](https://chat2db.ai/download) or psql before and after adding the index takes seconds and removes the guesswork.

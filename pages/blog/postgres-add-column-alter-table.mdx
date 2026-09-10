@@ -1,0 +1,358 @@
+---
+title: "Postgres Add Column: ALTER TABLE ADD COLUMN Guide"
+description: "How to add a column in PostgreSQL with ALTER TABLE: IF NOT EXISTS, multiple columns, fast defaults, NOT NULL, constraints, locking and safe production use."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 10, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# Postgres Add Column: ALTER TABLE ADD COLUMN Guide
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 10, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+Adding a column is the most common schema change in a PostgreSQL application, and the syntax fits on one line. What does not fit on one line is everything around it: whether the statement rewrites the table, why `NOT NULL` fails on existing rows, what lock it takes, why the new column does not show up in your views, and how to run it on a busy production table without a queue of blocked queries. This guide walks through `ALTER TABLE ... ADD COLUMN` from the basic form to the safe production pattern, using one running example table.
+
+## The basic ALTER TABLE ADD COLUMN syntax
+
+Start with a small `customers` table and a few rows so every later example has data to act on.
+
+```sql
+CREATE TABLE customers (
+    id      bigint PRIMARY KEY,
+    name    text NOT NULL,
+    email   text NOT NULL UNIQUE
+);
+
+INSERT INTO customers (id, name, email) VALUES
+    (1, 'Ada Lovelace',   'ada@example.com'),
+    (2, 'Grace Hopper',   'grace@example.com'),
+    (3, 'Linus Torvalds', 'linus@example.com');
+```
+
+The minimal statement names the table, the new column and its type:
+
+```sql
+ALTER TABLE customers ADD COLUMN phone text;
+```
+
+The `COLUMN` keyword is optional, but most teams keep it for readability. Existing rows get `NULL` in the new column because no default was given:
+
+```sql
+SELECT id, name, phone FROM customers ORDER BY id;
+```
+
+```text
+ id |      name      | phone
+----+----------------+-------
+  1 | Ada Lovelace   |
+  2 | Grace Hopper   |
+  3 | Linus Torvalds |
+```
+
+The new column is always appended last. `ADD COLUMN` is transactional, so it can sit inside `BEGIN ... COMMIT` with data changes and be rolled back as a unit.
+
+## Adding a column only if it does not exist
+
+Running the same migration twice produces `ERROR: column "phone" of relation "customers" already exists`. Since PostgreSQL 9.6 the statement can be made idempotent:
+
+```sql
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS phone text;
+```
+
+```text
+NOTICE:  column "phone" of relation "customers" already exists, skipping
+ALTER TABLE
+```
+
+`IF NOT EXISTS` only checks the name. If `phone` exists with a different type or default, the statement is skipped silently, so scripts that must converge to an exact state should check `information_schema.columns` explicitly.
+
+## Adding multiple columns in one statement
+
+`ALTER TABLE` accepts a comma-separated list of actions, so several columns can be added at once:
+
+```sql
+ALTER TABLE customers
+    ADD COLUMN country     char(2),
+    ADD COLUMN newsletter  boolean NOT NULL DEFAULT false,
+    ADD COLUMN notes       text;
+```
+
+This beats three separate statements for two reasons: the table lock is taken once instead of three times, and if any action needs a table rewrite, PostgreSQL performs a single rewrite covering all of them. `IF NOT EXISTS` can be applied per column within the list.
+
+## Adding a column with a DEFAULT
+
+A `DEFAULT` clause defines the value used for future inserts that omit the column and fills the new column for rows that already exist.
+
+```sql
+ALTER TABLE customers ADD COLUMN status text NOT NULL DEFAULT 'active';
+
+SELECT id, name, status FROM customers ORDER BY id;
+```
+
+```text
+ id |      name      | status
+----+----------------+--------
+  1 | Ada Lovelace   | active
+  2 | Grace Hopper   | active
+  3 | Linus Torvalds | active
+```
+
+### Fast defaults in PostgreSQL 11 and later
+
+Before PostgreSQL 11, filling existing rows meant rewriting the whole table and its indexes under an exclusive lock. PostgreSQL 11 introduced the fast default: when the default expression is non-volatile, its value is computed once at `ALTER` time and stored in the catalog (`pg_attribute.attmissingval`). Rows on disk are not touched; when a row that predates the column is read, PostgreSQL substitutes the stored value. The statement finishes in milliseconds regardless of table size.
+
+### Volatile defaults still rewrite the table
+
+The shortcut only applies to constants and stable expressions. A volatile function returns a different value on every call, so PostgreSQL must evaluate it per row, which means a full table rewrite:
+
+```sql
+-- gen_random_uuid() is VOLATILE: every existing row is rewritten
+ALTER TABLE customers ADD COLUMN public_id uuid NOT NULL DEFAULT gen_random_uuid();
+```
+
+The same applies to `random()`, `clock_timestamp()` and `nextval()`. A frequent surprise is `now()`: it is marked STABLE, so `DEFAULT now()` takes the fast path, but every pre-existing row then receives the identical timestamp of the moment the `ALTER` ran. If each existing row needs its own value, add the column nullable, backfill in batches, and only then set the default. You can check any function's volatility with `\df+` in psql or via `pg_proc.provolatile`.
+
+## NOT NULL with and without a default
+
+`NOT NULL` together with a `DEFAULT` works on any table, because every existing row receives the default. `NOT NULL` without a default only works on an empty table:
+
+```sql
+ALTER TABLE customers ADD COLUMN signup_source text NOT NULL;
+```
+
+```text
+ERROR:  column "signup_source" of relation "customers" contains null values
+```
+
+PostgreSQL has three rows with no value for the column and no way to invent one, so it refuses. For a required column where each row needs its own value, use the two-step pattern:
+
+```sql
+-- Step 1: add it nullable (metadata only, instant)
+ALTER TABLE customers ADD COLUMN signup_source text;
+
+-- Step 2: backfill, in batches on a large table
+UPDATE customers SET signup_source = 'import' WHERE signup_source IS NULL;
+
+-- Step 3: enforce the constraint
+ALTER TABLE customers ALTER COLUMN signup_source SET NOT NULL;
+```
+
+`SET NOT NULL` scans the table under an `ACCESS EXCLUSIVE` lock. Since PostgreSQL 12 you can avoid that scan: add a `CHECK (signup_source IS NOT NULL) NOT VALID` constraint, validate it under a weaker lock (see below), then run `SET NOT NULL`; PostgreSQL trusts the validated check and skips the scan. PostgreSQL 18 makes `NOT NULL` a first-class constraint that can itself be added `NOT VALID`.
+
+## Adding a column at a specific position
+
+MySQL users look for `ADD COLUMN phone text AFTER name`. PostgreSQL has no `AFTER`, `BEFORE` or `FIRST`: column order is fixed by `attnum` at creation and a new column always goes last. The only way to change physical order is to recreate the table (new table, `INSERT ... SELECT`, recreate indexes, constraints and grants, drop and rename), a large operation for a cosmetic result.
+
+It usually does not matter. Column order is not part of the relational model; application code should name columns explicitly in `INSERT` and `SELECT` lists, and `SELECT *` in production code is fragile regardless. If a particular order is wanted for people browsing the table, create a view with the columns arranged as you like.
+
+## Generated, identity and serial columns
+
+A generated column (PostgreSQL 12+) is computed from other columns. Stored generated columns are written to disk, so adding one rewrites the table:
+
+```sql
+ALTER TABLE customers
+    ADD COLUMN email_domain text
+    GENERATED ALWAYS AS (split_part(email, '@', 2)) STORED;
+
+SELECT name, email_domain FROM customers ORDER BY id;
+```
+
+```text
+      name      | email_domain
+----------------+--------------
+ Ada Lovelace   | example.com
+ Grace Hopper   | example.com
+ Linus Torvalds | example.com
+```
+
+PostgreSQL 18 adds `VIRTUAL` generated columns, computed on read with no rewrite.
+
+An identity column (PostgreSQL 10+) is the standard auto-incrementing integer. Adding one to a populated table creates the sequence and assigns a value to every existing row:
+
+```sql
+ALTER TABLE customers
+    ADD COLUMN ticket_no integer GENERATED BY DEFAULT AS IDENTITY;
+```
+
+The older `serial` pseudo-type does the same by creating a sequence and setting `DEFAULT nextval(...)`. Because `nextval()` is volatile, adding a `serial` or identity column always rewrites the table. Prefer identity columns for new work.
+
+## Adding a column with a foreign key or CHECK constraint
+
+Constraints can be declared inline in `ADD COLUMN` just as in `CREATE TABLE`:
+
+```sql
+CREATE TABLE plans (
+    id   smallint PRIMARY KEY,
+    name text NOT NULL
+);
+INSERT INTO plans VALUES (1, 'free'), (2, 'pro');
+
+ALTER TABLE customers
+    ADD COLUMN plan_id smallint REFERENCES plans (id),
+    ADD COLUMN credit  numeric(10,2) NOT NULL DEFAULT 0
+        CHECK (credit >= 0);
+```
+
+Since the new foreign key column is `NULL` for all existing rows, there is nothing to validate and the statement is fast. The catch is locking: adding a foreign key takes a `SHARE ROW EXCLUSIVE` lock on the referenced table (`plans`) as well as the lock on `customers`, so it conflicts with writes to both.
+
+### NOT VALID and VALIDATE CONSTRAINT for large tables
+
+When the constraint must be checked against existing data, for example after backfilling `plan_id`, declare it separately with `NOT VALID`:
+
+```sql
+ALTER TABLE customers ADD COLUMN plan_id smallint;
+-- ... backfill plan_id ...
+
+ALTER TABLE customers
+    ADD CONSTRAINT customers_plan_fk
+    FOREIGN KEY (plan_id) REFERENCES plans (id) NOT VALID;
+
+ALTER TABLE customers VALIDATE CONSTRAINT customers_plan_fk;
+```
+
+`ADD CONSTRAINT ... NOT VALID` is instant: it enforces the rule for new and updated rows without scanning existing ones. `VALIDATE CONSTRAINT` then scans while holding only a `SHARE UPDATE EXCLUSIVE` lock, which allows concurrent reads and writes. The same works for `CHECK` constraints.
+
+## JSONB, array and enum columns
+
+Any type can be used in `ADD COLUMN`, including user-defined ones.
+
+```sql
+ALTER TABLE customers
+    ADD COLUMN preferences jsonb   NOT NULL DEFAULT '{}'::jsonb,
+    ADD COLUMN tags        text[]  NOT NULL DEFAULT '{}';
+
+UPDATE customers
+SET preferences = '{"theme": "dark"}', tags = ARRAY['vip', 'beta']
+WHERE id = 1;
+
+SELECT id, preferences, tags FROM customers ORDER BY id;
+```
+
+```text
+ id |    preferences    |    tags
+----+-------------------+------------
+  1 | {"theme": "dark"} | {vip,beta}
+  2 | {}                | {}
+  3 | {}                | {}
+```
+
+Both defaults are constants, so both take the fast-default path. Prefer an empty object or array over `NULL` here; it lets you write `preferences ? 'theme'` or `'vip' = ANY(tags)` without null handling.
+
+For enum columns the type has to exist first:
+
+```sql
+CREATE TYPE customer_tier AS ENUM ('bronze', 'silver', 'gold');
+
+ALTER TABLE customers
+    ADD COLUMN tier customer_tier NOT NULL DEFAULT 'bronze';
+```
+
+A value added later with `ALTER TYPE customer_tier ADD VALUE 'platinum'` cannot be used in the same transaction, which is why many teams prefer `text` with a `CHECK` constraint.
+
+## Locking behaviour and doing it safely in production
+
+Every form of `ADD COLUMN` takes an `ACCESS EXCLUSIVE` lock, which conflicts with everything including plain `SELECT`. For a metadata-only change the lock lasts milliseconds, but lock queuing is the real hazard: if a long-running report holds an `ACCESS SHARE` lock on `customers`, your `ALTER` waits behind it, and every new query on `customers` waits behind your `ALTER`. A two-millisecond change can stall the application for as long as that report runs.
+
+The defence is a short `lock_timeout`, so the `ALTER` gives up instead of blocking the queue, plus a retry loop in the deployment script:
+
+```sql
+SET lock_timeout = '3s';
+
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS referrer text;
+```
+
+```text
+ERROR:  canceling statement due to lock timeout
+```
+
+When that error appears, wait and retry; the rest of the workload keeps running. The production checklist:
+
+1. Use constant or stable defaults so the change is metadata-only; avoid volatile defaults, `serial`, identity and stored generated columns on large live tables unless a rewrite is acceptable.
+2. Add the column nullable, backfill in batches, then add `NOT NULL` or constraints with `NOT VALID` and `VALIDATE`.
+3. Set `lock_timeout` and retry.
+4. Batch multiple column additions into one statement.
+5. Check `pg_stat_activity` for long transactions before deploying, and `pg_locks` if the `ALTER` seems stuck.
+
+The table editor in [Chat2DB](https://chat2db.ai/download) generates the `ALTER TABLE ... ADD COLUMN` statement from the form you fill in and shows it before executing, so you can review the default and constraint clauses, paste them into a migration file, and run them under a `lock_timeout` from your pipeline rather than applying directly to production.
+
+## How adding a column affects views and dependent objects
+
+A common surprise: you add a column, but a view defined with `SELECT * FROM customers` does not show it.
+
+```sql
+CREATE VIEW active_customers AS
+SELECT * FROM customers WHERE status = 'active';
+
+ALTER TABLE customers ADD COLUMN loyalty_points integer NOT NULL DEFAULT 0;
+
+SELECT loyalty_points FROM active_customers;
+```
+
+```text
+ERROR:  column "loyalty_points" does not exist
+```
+
+PostgreSQL expands `*` to an explicit column list when the view is created and stores that list. To expose the new column, run `CREATE OR REPLACE VIEW` with the updated definition; it can only append columns at the end, so reordering means dropping and recreating the view. Materialized views behave the same way.
+
+Indexes, triggers, foreign keys and row-level security policies are unaffected. Code that runs `INSERT INTO customers VALUES (...)` without a column list will break, and logical replication subscribers need the column added on their side too.
+
+## Renaming or dropping the column if you got it wrong
+
+Renaming is a catalog update and does not touch the data:
+
+```sql
+ALTER TABLE customers RENAME COLUMN referrer TO referral_source;
+```
+
+Dropping is also fast. PostgreSQL marks the column as dropped in `pg_attribute` and ignores it from then on; the space is reclaimed as rows are updated or when the table is next rewritten by `VACUUM FULL`.
+
+```sql
+ALTER TABLE customers DROP COLUMN IF EXISTS referral_source;
+```
+
+If a view or foreign key depends on the column, `DROP COLUMN` fails with a dependency error; `CASCADE` drops the dependents too, so read the message before using it. Fixing a wrong type uses `ALTER COLUMN ... TYPE`, which rewrites the table unless the conversion is binary-compatible (`varchar(50)` to `text` is; `integer` to `bigint` is not).
+
+## Adding a column from Django, Prisma or Flyway
+
+Django's `AddField` for a field with a default produces two statements, because Django does not want a permanent database default:
+
+```sql
+ALTER TABLE "shop_customer" ADD COLUMN "phone" varchar(20) DEFAULT '' NOT NULL;
+ALTER TABLE "shop_customer" ALTER COLUMN "phone" DROP DEFAULT;
+```
+
+Both are metadata-only on PostgreSQL 11 and later; `python manage.py sqlmigrate shop 0002` prints the SQL.
+
+Prisma writes a plain SQL migration file when you run `prisma migrate dev`:
+
+```sql
+-- AlterTable
+ALTER TABLE "Customer" ADD COLUMN "phone" TEXT;
+```
+
+A required field on a populated table hits the same "contains null values" error shown earlier; the fix is the two-step pattern written as two migrations.
+
+Flyway runs whatever SQL is in the versioned file, so you can include the safety settings yourself:
+
+```sql
+-- V3__add_customer_phone.sql
+SET lock_timeout = '3s';
+ALTER TABLE customers ADD COLUMN IF NOT EXISTS phone text;
+```
+
+## Version notes
+
+- PostgreSQL 9.6: `ADD COLUMN IF NOT EXISTS`.
+- PostgreSQL 10: identity columns (`GENERATED ... AS IDENTITY`).
+- PostgreSQL 11: fast defaults; a non-volatile default no longer rewrites the table.
+- PostgreSQL 12: stored generated columns; `SET NOT NULL` can skip the scan when a validated `CHECK (col IS NOT NULL)` exists; `ALTER TYPE ... ADD VALUE` allowed inside a transaction block.
+- PostgreSQL 13: `gen_random_uuid()` in core without `pgcrypto`.
+- PostgreSQL 18: virtual generated columns; `NOT NULL` constraints can be added `NOT VALID` and validated later.
+
+## Summary
+
+`ALTER TABLE customers ADD COLUMN phone text` is all you need most of the time. On a large or busy table the details decide whether it takes milliseconds or causes an outage: keep defaults constant, add required columns in two steps, use `NOT VALID` plus `VALIDATE CONSTRAINT`, set a `lock_timeout`, and update any `SELECT *` views afterwards.

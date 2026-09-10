@@ -1,0 +1,491 @@
+---
+title: "SQL Aggregate Functions: GROUP BY and HAVING Guide"
+description: "Learn SQL aggregate functions with runnable examples: COUNT, SUM, AVG, MIN, MAX, NULL rules, GROUP BY on multiple columns, HAVING, FILTER and ROLLUP."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 10, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# SQL Aggregate Functions: GROUP BY and HAVING Guide
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 10, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+Aggregate functions in SQL collapse many rows into one value: a count, a total, an average, a minimum or a maximum. Almost every report, dashboard and data check you will ever write depends on them, and almost every subtle reporting bug comes from one of a handful of rules that are easy to forget: how `NULL` is counted, what `GROUP BY` requires of the `SELECT` list, when to use `HAVING` instead of `WHERE`, and what happens to totals after a `JOIN`. This guide is hands-on. Every query runs against a small dataset defined below, and every result is shown so you can compare. The examples use PostgreSQL syntax; MySQL and SQL Server differences are called out where they matter, and a cheat sheet at the end lists the function names for all three.
+
+## Sample data
+
+Create two tables: `orders` and `order_items`. The `amount` column is deliberately nullable so the `NULL` behaviour of each function is visible.
+
+```sql
+CREATE TABLE orders (
+  id       INT PRIMARY KEY,
+  customer VARCHAR(20) NOT NULL,
+  region   VARCHAR(10) NOT NULL,
+  status   VARCHAR(10) NOT NULL,
+  amount   NUMERIC(10,2),
+  coupon   VARCHAR(10)
+);
+
+INSERT INTO orders VALUES
+  (1, 'alice', 'east',  'paid',     120.00, 'SPRING'),
+  (2, 'alice', 'east',  'paid',      80.00, NULL),
+  (3, 'bob',   'west',  'paid',     200.00, 'SPRING'),
+  (4, 'bob',   'west',  'refunded', 200.00, NULL),
+  (5, 'carol', 'east',  'paid',       NULL, NULL),
+  (6, 'dave',  'west',  'paid',      50.00, 'VIP'),
+  (7, 'dave',  'west',  'pending',   75.00, NULL),
+  (8, 'erin',  'north', 'paid',     300.00, 'VIP');
+
+CREATE TABLE order_items (
+  order_id INT,
+  sku      VARCHAR(10),
+  qty      INT
+);
+
+INSERT INTO order_items VALUES
+  (1, 'A', 1), (1, 'B', 2),
+  (3, 'A', 3),
+  (6, 'C', 1),
+  (8, 'A', 1), (8, 'B', 1), (8, 'C', 1);
+```
+
+## The five standard aggregates and NULL
+
+`COUNT`, `SUM`, `AVG`, `MIN` and `MAX` exist in every SQL database. The one rule that unifies them: an aggregate skips `NULL` inputs. The single exception is `COUNT(*)`, which counts rows, not values.
+
+```sql
+SELECT
+  COUNT(*)                 AS total_rows,
+  COUNT(amount)            AS rows_with_amount,
+  COUNT(coupon)            AS rows_with_coupon,
+  COUNT(DISTINCT coupon)   AS distinct_coupons,
+  SUM(amount)              AS revenue,
+  AVG(amount)              AS avg_amount,
+  SUM(amount) / COUNT(*)   AS avg_including_nulls,
+  MIN(amount)              AS smallest,
+  MAX(amount)              AS largest
+FROM orders;
+```
+
+```text
+ total_rows | rows_with_amount | rows_with_coupon | distinct_coupons | revenue | avg_amount | avg_including_nulls | smallest | largest
+------------+------------------+------------------+------------------+---------+------------+---------------------+----------+---------
+          8 |                7 |                4 |                2 | 1025.00 | 146.428571 |          128.125000 |    50.00 |  300.00
+```
+
+Read the three counts carefully:
+
+- `COUNT(*)` returns 8 because there are 8 rows.
+- `COUNT(amount)` returns 7 because order 5 has a `NULL` amount.
+- `COUNT(coupon)` returns 4 and `COUNT(DISTINCT coupon)` returns 2 (`SPRING` and `VIP`); `NULL` is never counted as a distinct value.
+
+`AVG(amount)` is 1025 / 7, not 1025 / 8. If you want missing amounts to count as zero, say so explicitly with `AVG(COALESCE(amount, 0))`, which gives 128.125.
+
+### SUM of no rows is NULL, not 0
+
+When no rows match, `COUNT` returns 0, but `SUM`, `AVG`, `MIN` and `MAX` return `NULL`. This bites application code that expects a number.
+
+```sql
+SELECT COUNT(*) AS n, SUM(amount) AS total, COALESCE(SUM(amount), 0) AS safe_total
+FROM orders
+WHERE region = 'south';
+```
+
+```text
+ n | total | safe_total
+---+-------+------------
+ 0 |       |          0
+```
+
+Wrap the sum in `COALESCE` (or `IFNULL` in MySQL, `ISNULL` in SQL Server) whenever the result feeds arithmetic or an API response.
+
+## GROUP BY basics
+
+`GROUP BY` splits the table into buckets and runs the aggregates once per bucket. Every column in the `SELECT` list must either be a grouping key or sit inside an aggregate.
+
+```sql
+SELECT region,
+       COUNT(*)      AS orders,
+       COUNT(amount) AS priced_orders,
+       SUM(amount)   AS revenue,
+       AVG(amount)   AS avg_amount
+FROM orders
+GROUP BY region
+ORDER BY region;
+```
+
+```text
+ region | orders | priced_orders | revenue | avg_amount
+--------+--------+---------------+---------+------------
+ east   |      3 |             2 |  200.00 | 100.000000
+ north  |      1 |             1 |  300.00 | 300.000000
+ west   |      4 |             4 |  525.00 | 131.250000
+```
+
+The `NULL` rule applies inside each group too: `east` has 3 orders but only 2 priced ones, so its average is 200 / 2.
+
+### GROUP BY multiple columns
+
+Listing several columns groups by each distinct combination of their values. Order of the columns in `GROUP BY` does not change the result, only the number of distinct combinations does.
+
+```sql
+SELECT region, status, COUNT(*) AS orders, SUM(amount) AS revenue
+FROM orders
+GROUP BY region, status
+ORDER BY region, status;
+```
+
+```text
+ region | status   | orders | revenue
+--------+----------+--------+---------
+ east   | paid     |      3 |  200.00
+ north  | paid     |      1 |  300.00
+ west   | paid     |      2 |  250.00
+ west   | pending  |      1 |   75.00
+ west   | refunded |      1 |  200.00
+```
+
+### The "must appear in the GROUP BY clause" error
+
+The most common `GROUP BY` mistake is selecting a column that is neither grouped nor aggregated:
+
+```sql
+SELECT region, customer, SUM(amount)
+FROM orders
+GROUP BY region;
+```
+
+PostgreSQL refuses to run it:
+
+```text
+ERROR:  column "orders.customer" must appear in the GROUP BY clause
+        or be used in an aggregate function
+```
+
+The database is right to complain. The `east` group contains both `alice` and `carol`, so there is no single correct value for `customer`. Fix it by adding `customer` to `GROUP BY`, wrapping it in an aggregate such as `STRING_AGG(customer, ', ')`, or removing it.
+
+MySQL behaves the same way when the `ONLY_FULL_GROUP_BY` SQL mode is on, which has been the default since MySQL 5.7:
+
+```text
+ERROR 1055 (42000): Expression #2 of SELECT list is not in GROUP BY clause
+and contains nonaggregated column 'shop.orders.customer' which is not
+functionally dependent on columns in GROUP BY clause; this is incompatible
+with sql_mode=only_full_group_by
+```
+
+If someone has disabled that mode, MySQL silently returns an arbitrary `customer` from each group. Results look plausible and are wrong, so leave the mode on. One legitimate shortcut exists in both PostgreSQL and MySQL: if you group by a table's primary key, you may select any other column of that table because it is functionally dependent on the key. `GROUP BY o.id` followed by `SELECT o.customer` is valid; `GROUP BY o.region` followed by `SELECT o.customer` is not.
+
+## HAVING vs WHERE
+
+`WHERE` filters rows before grouping. `HAVING` filters groups after aggregation. Use `WHERE` for anything you can decide on a single row, and `HAVING` for conditions on `COUNT`, `SUM` and friends.
+
+```sql
+-- customers with more than one paid order
+SELECT customer, COUNT(*) AS paid_orders
+FROM orders
+WHERE status = 'paid'
+GROUP BY customer
+HAVING COUNT(*) > 1;
+```
+
+```text
+ customer | paid_orders
+----------+-------------
+ alice    |           2
+```
+
+Putting the aggregate in `WHERE` fails with `aggregate functions are not allowed in WHERE` because at that stage no groups exist yet. `HAVING` can also test sums:
+
+```sql
+SELECT customer, SUM(amount) AS revenue
+FROM orders
+GROUP BY customer
+HAVING SUM(amount) >= 200
+ORDER BY customer;
+```
+
+```text
+ customer | revenue
+----------+---------
+ alice    |  200.00
+ bob      |  400.00
+ erin     |  300.00
+```
+
+`carol` disappears because her `SUM(amount)` is `NULL` and `NULL >= 200` is not true. Also note the difference between the two queries: the first one counted only paid orders because `WHERE` removed the others before grouping; the second counted `bob`'s refunded order because nothing filtered it out.
+
+## ORDER BY aggregates
+
+You can sort by an aggregate expression, by its alias, or by its position in the select list. The alias form is the most readable.
+
+```sql
+SELECT region, SUM(amount) AS revenue
+FROM orders
+GROUP BY region
+ORDER BY revenue DESC;
+```
+
+```text
+ region | revenue
+--------+---------
+ west   |  525.00
+ north  |  300.00
+ east   |  200.00
+```
+
+`ORDER BY SUM(amount) DESC` works too, and is required in SQL Server if the aggregate has no alias, since SQL Server does not allow column aliases in `ORDER BY` when they are computed inside the same query level with `GROUP BY`. Combine with `LIMIT` (or `TOP` / `FETCH FIRST`) to get a top-N list.
+
+## Aggregates with JOINs and the row-multiplication trap
+
+Joining a one-to-many table before aggregating multiplies the "one" side. Here `orders` is joined to `order_items`, and each order row is repeated once per item:
+
+```sql
+SELECT o.customer, SUM(o.amount) AS revenue
+FROM orders o
+JOIN order_items i ON i.order_id = o.id
+GROUP BY o.customer
+ORDER BY o.customer;
+```
+
+```text
+ customer | revenue
+----------+---------
+ alice    |  240.00
+ bob      |  200.00
+ dave     |   50.00
+ erin     |  900.00
+```
+
+`erin` placed one 300.00 order with three items, so the amount is summed three times. `alice`'s order 2 has no items and vanishes because of the inner join. Neither number is what a finance team wants. The fix is to aggregate the many side first, then join one row per order:
+
+```sql
+SELECT o.customer,
+       SUM(o.amount)                AS revenue,
+       COALESCE(SUM(i.item_qty), 0) AS items
+FROM orders o
+LEFT JOIN (
+  SELECT order_id, SUM(qty) AS item_qty
+  FROM order_items
+  GROUP BY order_id
+) i ON i.order_id = o.id
+GROUP BY o.customer
+ORDER BY o.customer;
+```
+
+```text
+ customer | revenue | items
+----------+---------+-------
+ alice    |  200.00 |     3
+ bob      |  400.00 |     3
+ carol    |         |     0
+ dave     |  125.00 |     1
+ erin     |  300.00 |     3
+```
+
+Whenever a total looks too large after adding a join, check the grain of each table. `COUNT(DISTINCT o.id)` is a quick diagnostic: if it differs from `COUNT(*)`, rows have been multiplied.
+
+## Conditional aggregation with CASE and FILTER
+
+Often you want several counts with different conditions in one pass. The portable way is an aggregate over a `CASE` expression; PostgreSQL also offers the cleaner `FILTER` clause.
+
+```sql
+SELECT region,
+       COUNT(*)                                       AS orders,
+       COUNT(*) FILTER (WHERE status = 'paid')        AS paid_orders,
+       SUM(amount) FILTER (WHERE status = 'refunded') AS refunded
+FROM orders
+GROUP BY region
+ORDER BY region;
+```
+
+```text
+ region | orders | paid_orders | refunded
+--------+--------+-------------+----------
+ east   |      3 |           3 |
+ north  |      1 |           1 |
+ west   |      4 |           2 |   200.00
+```
+
+The same query in MySQL or SQL Server:
+
+```sql
+SELECT region,
+       COUNT(*)                                                AS orders,
+       SUM(CASE WHEN status = 'paid' THEN 1 ELSE 0 END)        AS paid_orders,
+       SUM(CASE WHEN status = 'refunded' THEN amount END)      AS refunded
+FROM orders
+GROUP BY region
+ORDER BY region;
+```
+
+`COUNT(CASE WHEN status = 'paid' THEN 1 END)` also works because the `CASE` yields `NULL` for non-matching rows and `COUNT` skips them. Either way, `refunded` is `NULL` for regions with no refunds; wrap it in `COALESCE` if you need zero.
+
+## String and array aggregates
+
+Sometimes the output should be a list rather than a number. Each database spells this differently.
+
+```sql
+-- PostgreSQL
+SELECT region,
+       STRING_AGG(DISTINCT customer, ', ' ORDER BY customer) AS customers,
+       ARRAY_AGG(id ORDER BY id)                             AS order_ids
+FROM orders
+GROUP BY region
+ORDER BY region;
+```
+
+```text
+ region | customers    | order_ids
+--------+--------------+-----------
+ east   | alice, carol | {1,2,5}
+ north  | erin         | {8}
+ west   | bob, dave    | {3,4,6,7}
+```
+
+MySQL uses `GROUP_CONCAT(DISTINCT customer ORDER BY customer SEPARATOR ', ')`, and its result is truncated at `group_concat_max_len` bytes (1024 by default), so raise that setting for long lists. SQL Server 2017 and later uses `STRING_AGG(customer, ', ') WITHIN GROUP (ORDER BY customer)`; it has no `DISTINCT` option, so deduplicate in a subquery first. Only PostgreSQL has `ARRAY_AGG`; MySQL and SQL Server offer `JSON_ARRAYAGG` and `JSON_QUERY` style workarounds instead.
+
+## Statistical aggregates
+
+Beyond averages, most databases ship standard deviation, variance and percentiles.
+
+```sql
+SELECT ROUND(STDDEV(amount), 2)   AS stddev_sample,
+       ROUND(VARIANCE(amount), 2) AS variance_sample,
+       PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY amount) AS median
+FROM orders;
+```
+
+```text
+ stddev_sample | variance_sample | median
+---------------+-----------------+--------
+         90.22 |         8139.29 |    120
+```
+
+Two portability warnings. First, in PostgreSQL and SQL Server `STDDEV` means the sample deviation (`STDDEV_SAMP`), while in MySQL plain `STDDEV` is the population deviation (`STDDEV_POP`), which for this data gives 83.53. Use the explicit `_SAMP` or `_POP` names in shared code. Second, `PERCENTILE_CONT` is an ordered-set aggregate in PostgreSQL, a window-style function in SQL Server (`PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY amount) OVER ()`), and absent from MySQL, where you compute medians with window functions or `ROW_NUMBER`.
+
+## BOOL_AND and BOOL_OR
+
+PostgreSQL can aggregate booleans directly, which is handy for "all rows satisfy" and "any row satisfies" checks.
+
+```sql
+SELECT customer,
+       BOOL_AND(status = 'paid')     AS all_paid,
+       BOOL_OR(coupon IS NOT NULL)   AS used_coupon
+FROM orders
+GROUP BY customer
+ORDER BY customer;
+```
+
+```text
+ customer | all_paid | used_coupon
+----------+----------+-------------
+ alice    | t        | t
+ bob      | f        | t
+ carol    | t        | f
+ dave     | f        | t
+ erin     | t        | t
+```
+
+MySQL treats booleans as 0 and 1, so `MIN(status = 'paid')` is the equivalent of `BOOL_AND` and `MAX(...)` of `BOOL_OR`. SQL Server has no boolean type; use `MIN(CASE WHEN status = 'paid' THEN 1 ELSE 0 END)`.
+
+## Aggregates vs window functions
+
+A `GROUP BY` aggregate collapses rows; the same function with an `OVER` clause keeps every row and attaches the aggregate to it. That makes running totals and per-group shares possible without a self-join.
+
+```sql
+SELECT id, customer, amount,
+       SUM(amount) OVER (PARTITION BY customer) AS customer_total,
+       SUM(amount) OVER (ORDER BY id)           AS running_total
+FROM orders
+ORDER BY id;
+```
+
+```text
+ id | customer | amount | customer_total | running_total
+----+----------+--------+----------------+---------------
+  1 | alice    | 120.00 |         200.00 |        120.00
+  2 | alice    |  80.00 |         200.00 |        200.00
+  3 | bob      | 200.00 |         400.00 |        400.00
+  4 | bob      | 200.00 |         400.00 |        600.00
+  5 | carol    |        |                |        600.00
+  6 | dave     |  50.00 |         125.00 |        650.00
+  7 | dave     |  75.00 |         125.00 |        725.00
+  8 | erin     | 300.00 |         300.00 |       1025.00
+```
+
+All eight rows survive. If you find yourself joining a grouped subquery back to the original table just to compare each row against its group total, a window function is usually the simpler answer.
+
+## GROUPING SETS and ROLLUP
+
+`ROLLUP` adds subtotal and grand-total rows to a multi-column grouping in a single query:
+
+```sql
+SELECT region, status, SUM(amount) AS revenue
+FROM orders
+GROUP BY ROLLUP (region, status)
+ORDER BY region, status;
+```
+
+```text
+ region | status   | revenue
+--------+----------+---------
+ east   | paid     |  200.00
+ east   |          |  200.00
+ north  | paid     |  300.00
+ north  |          |  300.00
+ west   | paid     |  250.00
+ west   | pending  |   75.00
+ west   | refunded |  200.00
+ west   |          |  525.00
+        |          | 1025.00
+```
+
+A `NULL` in a grouping column marks a subtotal row. Because real data can also contain `NULL`, use `GROUPING(region)` (returns 1 on subtotal rows) to tell them apart. `CUBE` produces subtotals for every combination of the columns, and `GROUPING SETS ((region), (status), ())` lets you pick exactly which subtotals you want. MySQL supports `GROUP BY region, status WITH ROLLUP` and, from 8.0, the standard `ROLLUP (...)` form, but not `CUBE` or `GROUPING SETS`. SQL Server supports all three.
+
+## Performance notes
+
+A `GROUP BY` has to bring together all rows with the same key. Planners do this in one of two ways, and `EXPLAIN` tells you which:
+
+- **HashAggregate** builds an in-memory hash table keyed by the grouping columns. It does not need sorted input, so it is the default for unsorted scans. If the number of groups is large, the table can exceed `work_mem` (PostgreSQL) and spill to disk.
+- **GroupAggregate** (called *Stream Aggregate* in SQL Server) walks rows already sorted by the grouping key and emits a group each time the key changes. It needs sorted input, which comes either from an explicit `Sort` node or from an index scan.
+
+```sql
+EXPLAIN SELECT region, status, SUM(amount)
+FROM orders
+GROUP BY region, status;
+```
+
+On a large table, an index whose leading columns match the `GROUP BY` columns lets the planner choose `GroupAggregate` over an `Index Scan` and skip both the hash table and the sort. A composite index on `(region, status)` serves this query; adding `amount` as an included column (`INCLUDE (amount)` in PostgreSQL 11+, `INCLUDE` in SQL Server) makes it index-only. A few further habits pay off:
+
+- Filter with `WHERE` before grouping so fewer rows reach the aggregate; `HAVING` runs after the expensive part.
+- `COUNT(DISTINCT col)` is much heavier than `COUNT(col)` because each group must deduplicate. On very large tables consider approximate alternatives (`APPROX_COUNT_DISTINCT` in SQL Server, the `hll` extension in PostgreSQL).
+- Avoid wrapping the grouping column in a function (`GROUP BY LOWER(region)`) unless an expression index exists, since it blocks index use.
+
+When comparing plans it helps to have the query, the `EXPLAIN` output and the result side by side. A SQL client such as [Chat2DB](https://chat2db.ai/download) shows the execution plan next to the grid and lets you rerun the query after adding an index to see whether the aggregate node changed.
+
+## Cheat sheet: aggregate functions across databases
+
+| Purpose | PostgreSQL | MySQL | SQL Server |
+|---|---|---|---|
+| Count rows / non-null values | `COUNT(*)`, `COUNT(col)` | same | same |
+| Distinct count | `COUNT(DISTINCT col)` | same | same (`APPROX_COUNT_DISTINCT` for estimates) |
+| Sum, average, min, max | `SUM`, `AVG`, `MIN`, `MAX` | same | same |
+| Null-safe total | `COALESCE(SUM(x), 0)` | `IFNULL(SUM(x), 0)` | `ISNULL(SUM(x), 0)` |
+| Conditional count | `COUNT(*) FILTER (WHERE c)` | `SUM(CASE WHEN c THEN 1 ELSE 0 END)` | `SUM(CASE WHEN c THEN 1 ELSE 0 END)` |
+| String list | `STRING_AGG(x, ', ' ORDER BY x)` | `GROUP_CONCAT(x ORDER BY x SEPARATOR ', ')` | `STRING_AGG(x, ', ') WITHIN GROUP (ORDER BY x)` |
+| Array / JSON list | `ARRAY_AGG(x)`, `JSON_AGG(x)` | `JSON_ARRAYAGG(x)` | `JSON_ARRAYAGG(x)` (2022+) |
+| Sample std dev | `STDDEV_SAMP` | `STDDEV_SAMP` (`STDDEV` is population) | `STDEV` |
+| Population std dev | `STDDEV_POP` | `STDDEV_POP` or `STDDEV` | `STDEVP` |
+| Variance | `VAR_SAMP`, `VAR_POP` | `VAR_SAMP`, `VAR_POP` | `VAR`, `VARP` |
+| Median / percentile | `PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY x)` | window function workaround | `PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY x) OVER ()` |
+| All / any true | `BOOL_AND`, `BOOL_OR` | `MIN(cond)`, `MAX(cond)` | `MIN(CASE ...)`, `MAX(CASE ...)` |
+| Subtotals | `ROLLUP`, `CUBE`, `GROUPING SETS` | `ROLLUP` / `WITH ROLLUP` | `ROLLUP`, `CUBE`, `GROUPING SETS` |
+| Aggregate that keeps rows | `SUM(x) OVER (...)` | same (8.0+) | same |
+
+## Summary
+
+Aggregate functions are simple to call and easy to misread. Keep four rules in mind and most reporting bugs go away: aggregates ignore `NULL` except `COUNT(*)`, and `SUM` over zero rows is `NULL`; every selected column must be grouped or aggregated; `WHERE` filters rows and `HAVING` filters groups; and a join to a many-side table must be pre-aggregated or your totals will be multiplied. Add `FILTER` or `CASE` for conditional counts, `STRING_AGG` for lists, window functions when you need row-level detail alongside totals, and `ROLLUP` when the report needs subtotals. Run the examples above against your own database, check the plan with `EXPLAIN`, and the behaviour will stay predictable as the tables grow.

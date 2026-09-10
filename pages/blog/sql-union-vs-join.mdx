@@ -1,0 +1,395 @@
+---
+title: "SQL UNION vs JOIN: Stack Rows or Combine Columns"
+description: "Understand the difference between UNION and JOIN in SQL with runnable examples, a MySQL FULL OUTER JOIN workaround, performance notes and a decision table."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 10, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# SQL UNION vs JOIN: Stack Rows or Combine Columns
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 10, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+`JOIN` and `UNION` both take two inputs and produce one result, which is why they get confused. A `JOIN` asks "which rows in table A relate to which rows in table B?" and places matching rows next to each other, so the result gets wider. A `UNION` asks "what is the combined set of rows from query A and query B?" and places one result under the other, so the result gets taller. This article builds that mental model with one small schema you can run as-is, then covers the cases where the choice is less obvious: emulating `FULL OUTER JOIN`, mixing the two in a single query, and the mistakes that show up in code review.
+
+## The core mental model
+
+Think of a `JOIN` as horizontal and a `UNION` as vertical.
+
+- `JOIN` combines **columns**. Each output row is built from one left row and one right row that satisfy the `ON` condition, so the output has the columns of both inputs.
+- `UNION` combines **rows**. Each output row comes from exactly one input, unchanged. The output has the columns of the first `SELECT`, and every branch must produce the same number of columns with compatible types.
+
+A `JOIN` needs a key to decide which rows go together. A `UNION` needs no relationship at all, only two `SELECT` lists of the same shape.
+
+## Sample schema
+
+Every query below runs against these four tables. The syntax is PostgreSQL; it also runs unchanged on MySQL 8 and SQL Server except where noted.
+
+```sql
+CREATE TABLE customers (
+  customer_id INT PRIMARY KEY,
+  name        VARCHAR(50)  NOT NULL,
+  email       VARCHAR(100) NOT NULL,
+  city        VARCHAR(50)
+);
+
+CREATE TABLE suppliers (
+  supplier_id INT PRIMARY KEY,
+  name        VARCHAR(50)  NOT NULL,
+  email       VARCHAR(100) NOT NULL,
+  city        VARCHAR(50)
+);
+
+CREATE TABLE orders_2024 (
+  order_id    INT PRIMARY KEY,
+  customer_id INT NOT NULL,
+  amount      NUMERIC(10,2) NOT NULL,
+  ordered_at  DATE NOT NULL
+);
+
+CREATE TABLE orders_2025 (
+  order_id    INT PRIMARY KEY,
+  customer_id INT NOT NULL,
+  amount      NUMERIC(10,2) NOT NULL,
+  ordered_at  DATE NOT NULL
+);
+
+INSERT INTO customers VALUES
+  (1, 'Ada Lovelace',      'ada@example.com',      'London'),
+  (2, 'Grace Hopper',      'grace@example.com',    'New York'),
+  (3, 'Linus Torvalds',    'linus@example.com',    'Portland'),
+  (4, 'Margaret Hamilton', 'margaret@example.com', 'Boston');
+
+INSERT INTO suppliers VALUES
+  (10, 'Acme Parts',    'sales@acme.example',    'London'),
+  (11, 'Globex Metals', 'orders@globex.example', 'Chicago'),
+  (12, 'Grace Hopper',  'grace@example.com',     'New York');
+
+INSERT INTO orders_2024 VALUES
+  (101, 1, 120.00, '2024-03-05'),
+  (102, 2,  80.00, '2024-07-19'),
+  (103, 1,  45.50, '2024-11-02');
+
+INSERT INTO orders_2025 VALUES
+  (201, 2, 200.00, '2025-01-10'),
+  (202, 3,  60.00, '2025-02-14'),
+  (203, 1, 120.00, '2025-03-05');
+```
+
+Grace Hopper appears in both `customers` and `suppliers` with the same email. That overlap is deliberate; it drives the `FULL OUTER JOIN` examples later.
+
+## Side by side: the same tables, two output shapes
+
+### JOIN: wider
+
+To see which customer placed each 2025 order, the two tables are related through `customer_id`, so `JOIN` is the tool:
+
+```sql
+SELECT c.name, o.order_id, o.amount
+FROM orders_2025 AS o
+JOIN customers  AS c ON c.customer_id = o.customer_id
+ORDER BY o.order_id;
+```
+
+```text
+ name           | order_id | amount
+----------------+----------+--------
+ Grace Hopper   |      201 | 200.00
+ Linus Torvalds |      202 |  60.00
+ Ada Lovelace   |      203 | 120.00
+(3 rows)
+```
+
+Three input rows, three output rows, but each row now carries a column from `customers`. Nothing got taller; it got wider.
+
+### UNION: taller
+
+To see all orders across both years, the tables are not related; they are the same kind of thing split in two. `UNION ALL` stacks them:
+
+```sql
+SELECT order_id, customer_id, amount, ordered_at FROM orders_2024
+UNION ALL
+SELECT order_id, customer_id, amount, ordered_at FROM orders_2025
+ORDER BY ordered_at;
+```
+
+```text
+ order_id | customer_id | amount | ordered_at
+----------+-------------+--------+------------
+      101 |           1 | 120.00 | 2024-03-05
+      102 |           2 |  80.00 | 2024-07-19
+      103 |           1 |  45.50 | 2024-11-02
+      201 |           2 | 200.00 | 2025-01-10
+      202 |           3 |  60.00 | 2025-02-14
+      203 |           1 | 120.00 | 2025-03-05
+(6 rows)
+```
+
+Same four columns as either input, six rows instead of three. Nothing got wider; it got taller.
+
+### UNION vs UNION ALL
+
+`UNION` on its own removes duplicate rows from the combined result. `UNION ALL` keeps everything. The `city` columns show the difference:
+
+```sql
+SELECT city FROM customers
+UNION
+SELECT city FROM suppliers
+ORDER BY city;
+```
+
+```text
+ city
+----------
+ Boston
+ Chicago
+ London
+ New York
+ Portland
+(5 rows)
+```
+
+Seven input rows became five because London and New York appear on both sides. With `UNION ALL` you would get all seven. MySQL also accepts `UNION DISTINCT` as a synonym for plain `UNION`.
+
+## When UNION is the right tool
+
+### Same-shaped tables split by time or region
+
+Partitioned-by-hand tables such as `orders_2024` and `orders_2025`, or `sales_eu` and `sales_us`, are the classic case: the rows are the same kind of entity and you want one list. To tell the branches apart afterwards, add a literal column such as `2024 AS yr` to each `SELECT`.
+
+### Combining results of different filters
+
+When two filters are simple, `WHERE a OR b` is better. When each branch needs different joins, `UNION` keeps each branch readable. This lists order IDs that are either large or placed by anyone in Portland:
+
+```sql
+SELECT o.order_id
+FROM orders_2025 AS o
+WHERE o.amount > 100
+UNION
+SELECT o.order_id
+FROM orders_2025 AS o
+JOIN customers  AS c ON c.customer_id = o.customer_id
+WHERE c.city = 'Portland';
+```
+
+```text
+ order_id
+----------
+      201
+      202
+      203
+(3 rows)
+```
+
+Here `UNION` (not `UNION ALL`) is correct: an order could match both branches and should be listed once.
+
+### Building a contact list from several entity tables
+
+Customers and suppliers live in different tables but both have a name and an email. A type column records where each row came from:
+
+```sql
+SELECT 'customer' AS contact_type, name, email FROM customers
+UNION ALL
+SELECT 'supplier' AS contact_type, name, email FROM suppliers
+ORDER BY name, contact_type;
+```
+
+```text
+ contact_type | name              | email
+--------------+-------------------+-----------------------
+ supplier     | Acme Parts        | sales@acme.example
+ customer     | Ada Lovelace      | ada@example.com
+ supplier     | Globex Metals     | orders@globex.example
+ customer     | Grace Hopper      | grace@example.com
+ supplier     | Grace Hopper      | grace@example.com
+ customer     | Linus Torvalds    | linus@example.com
+ customer     | Margaret Hamilton | margaret@example.com
+(7 rows)
+```
+
+Grace appears twice because the `contact_type` differs, so the rows are not duplicates even under plain `UNION`.
+
+## When JOIN is the right tool
+
+Any time the question involves two entities that reference each other, you want a `JOIN`. Orders reference customers, so "revenue per customer" is a `JOIN` followed by `GROUP BY`:
+
+```sql
+SELECT c.name, SUM(o.amount) AS revenue_2025
+FROM customers  AS c
+JOIN orders_2025 AS o ON o.customer_id = c.customer_id
+GROUP BY c.name
+ORDER BY revenue_2025 DESC;
+```
+
+```text
+ name           | revenue_2025
+----------------+--------------
+ Grace Hopper   |       200.00
+ Ada Lovelace   |       120.00
+ Linus Torvalds |        60.00
+(3 rows)
+```
+
+Use `LEFT JOIN` when rows on one side may have no match and you still want them (Margaret Hamilton has no 2025 order and is missing above).
+
+## UNION as a "poor man's FULL OUTER JOIN"
+
+You will sometimes see this pattern presented as a way to get "everything from both tables":
+
+```sql
+SELECT name, email FROM customers
+UNION
+SELECT name, email FROM suppliers;
+```
+
+It does return every contact once, but it is not an outer join. It cannot tell you that Grace the customer and Grace the supplier match, and it cannot show customer columns and supplier columns side by side. A real `FULL OUTER JOIN` does both:
+
+```sql
+SELECT c.customer_id, c.name AS customer_name,
+       s.supplier_id, s.name AS supplier_name
+FROM customers AS c
+FULL OUTER JOIN suppliers AS s ON s.email = c.email
+ORDER BY c.customer_id, s.supplier_id;
+```
+
+```text
+ customer_id | customer_name     | supplier_id | supplier_name
+-------------+-------------------+-------------+---------------
+           1 | Ada Lovelace      |        NULL | NULL
+           2 | Grace Hopper      |          12 | Grace Hopper
+           3 | Linus Torvalds    |        NULL | NULL
+           4 | Margaret Hamilton |        NULL | NULL
+        NULL | NULL              |          10 | Acme Parts
+        NULL | NULL              |          11 | Globex Metals
+(6 rows)
+```
+
+The matched pair sits on one row; unmatched rows from either side are padded with `NULL`. That is a different result from stacking, and it is usually what "all rows from both tables" means when someone asks for it.
+
+PostgreSQL and SQL Server support `FULL OUTER JOIN` (SQL Server also accepts `FULL JOIN`). MySQL, as of 8.x, does not.
+
+### Emulating FULL OUTER JOIN in MySQL
+
+The standard workaround is to `UNION ALL` a `LEFT JOIN` with a `RIGHT JOIN`, and filter the right-join branch so the matched rows are not counted twice:
+
+```sql
+-- MySQL: FULL OUTER JOIN emulation
+SELECT c.customer_id, c.name AS customer_name,
+       s.supplier_id, s.name AS supplier_name
+FROM customers AS c
+LEFT JOIN suppliers AS s ON s.email = c.email
+
+UNION ALL
+
+SELECT c.customer_id, c.name,
+       s.supplier_id, s.name
+FROM customers AS c
+RIGHT JOIN suppliers AS s ON s.email = c.email
+WHERE c.customer_id IS NULL
+ORDER BY customer_id, supplier_id;
+```
+
+This produces exactly the six rows shown above. Two details matter:
+
+1. The `WHERE c.customer_id IS NULL` in the second branch keeps only suppliers that had no customer match. Without it, Grace would appear twice.
+2. Use `UNION ALL`, not `UNION`. Plain `UNION` would also remove the duplicate Grace row, so it looks like it works, but it would silently collapse any *legitimately* identical rows too, and it pays for a sort or hash it does not need. Filtering explicitly is both correct and cheaper.
+
+In MySQL, `ORDER BY` after a `UNION` applies to the whole result; to sort or `LIMIT` one branch, wrap that branch in parentheses.
+
+## Combining JOIN and UNION in one query
+
+The two operators compose naturally. A common shape is a `JOIN` inside each `UNION` branch, then aggregation over the stacked result. This gives per-customer revenue for both years from the split order tables:
+
+```sql
+SELECT name, yr, SUM(amount) AS revenue
+FROM (
+  SELECT c.name, 2024 AS yr, o.amount
+  FROM orders_2024 AS o
+  JOIN customers   AS c ON c.customer_id = o.customer_id
+
+  UNION ALL
+
+  SELECT c.name, 2025 AS yr, o.amount
+  FROM orders_2025 AS o
+  JOIN customers   AS c ON c.customer_id = o.customer_id
+) AS all_orders
+GROUP BY name, yr
+ORDER BY name, yr;
+```
+
+```text
+ name           |  yr  | revenue
+----------------+------+---------
+ Ada Lovelace   | 2024 |  165.50
+ Ada Lovelace   | 2025 |  120.00
+ Grace Hopper   | 2024 |   80.00
+ Grace Hopper   | 2025 |  200.00
+ Linus Torvalds | 2025 |   60.00
+(5 rows)
+```
+
+You could also `UNION ALL` the raw order tables first and `JOIN` to `customers` once on the outside. Both are valid; the join-per-branch form lets each branch use its own indexes and filters, while the join-once form avoids repeating the join text.
+
+## Performance considerations
+
+The costs of the two operators fail in different directions.
+
+**Joins multiply rows.** An inner join between a one-row-per-customer table and a many-rows-per-customer table returns one row per order, not one per customer. Join two many-to-many tables on a non-selective key and the row count can explode. If a join is slow, check that the `ON` condition is complete and the joined columns are indexed, and consider aggregating each side first and joining the smaller results.
+
+**UNION pays for deduplication.** Plain `UNION` must compare every row of the combined result against every other, which the planner does with a sort or a hash over the full output. For large inputs that is a full extra pass and can spill to disk. `UNION ALL` is a straight append with no extra work. If the branches cannot overlap, or you do not care if they do, `UNION ALL` is always cheaper.
+
+**Each UNION branch plans independently.** A `WHERE` inside a branch is pushed down and uses that table's indexes. A `WHERE` on the outer query may or may not be pushed into the branches depending on the database, so filter inside each branch when you can.
+
+When you are unsure which shape a query took, `EXPLAIN` shows `Append` (PostgreSQL) or a `UNION` temporary table (MySQL) for unions, and `Hash Join`, `Nested Loop` or `Merge Join` nodes for joins. Viewing the plan in a client such as [Chat2DB](https://chat2db.ai/download) that renders it as a tree makes the difference obvious at a glance.
+
+## Common mistakes
+
+### Using UNION to "merge columns"
+
+The most frequent misunderstanding is expecting `UNION` to place two tables next to each other:
+
+```sql
+-- Wrong: this does not put name next to amount
+SELECT name   FROM customers
+UNION ALL
+SELECT amount FROM orders_2025;
+```
+
+PostgreSQL rejects this because `VARCHAR` and `NUMERIC` are not compatible. MySQL may accept it after implicit conversion and hand you one column of mixed values, which is worse. If you want columns from two tables on the same row, you want a `JOIN`.
+
+### Column count mismatch
+
+Every branch of a `UNION` must return the same number of columns:
+
+```sql
+-- ERROR: each UNION query must have the same number of columns
+SELECT name, email, city FROM customers
+UNION ALL
+SELECT name, email FROM suppliers;
+```
+
+Pad the shorter branch with a literal (`NULL AS city`) if the column does not exist on one side. Result column names come from the **first** branch only; aliases in later branches are ignored.
+
+### Forgetting UNION ALL
+
+Writing `UNION` by habit when you meant `UNION ALL` is slower, as covered above, and can silently drop real rows. If two customers each placed a 120.00 order on the same date and you `UNION` the amount and date columns, one of those orders vanishes. Default to `UNION ALL` and only use `UNION` when you have a specific reason to deduplicate.
+
+## Decision table
+
+| You want | Use | Result shape | Notes |
+|---|---|---|---|
+| Columns from two related tables on the same row | `JOIN` | Wider | Requires a key; use `LEFT JOIN` to keep unmatched rows |
+| All rows from two same-shaped tables | `UNION ALL` | Taller | Fastest; keeps duplicates |
+| All distinct rows from two same-shaped queries | `UNION` | Taller | Adds a dedup pass |
+| Rows matching filter A or filter B, listed once | `UNION` (or `WHERE ... OR ...`) | Taller | `UNION` when branches need different joins |
+| One list of several entity types with a label | `UNION ALL` with a literal type column | Taller | Pad missing columns with `NULL` |
+| Matched pairs plus unmatched from both sides | `FULL OUTER JOIN` | Wider | MySQL: emulate with `LEFT JOIN` `UNION ALL` filtered `RIGHT JOIN` |
+| Per-entity totals across split tables | `JOIN` inside each branch, then `UNION ALL`, then `GROUP BY` | Both | Or union first and join once on the outside |
+
+## Summary
+
+`JOIN` answers "how do these rows relate?" by matching on a key and widening the result. `UNION` answers "what is the full set of rows?" by stacking compatible `SELECT`s and lengthening it. Reach for `JOIN` when tables reference each other, `UNION ALL` when tables are the same shape, and plain `UNION` only when duplicates must go. Where the two overlap is `FULL OUTER JOIN`: use the real thing on PostgreSQL and SQL Server, and on MySQL build it from a `LEFT JOIN`, a filtered `RIGHT JOIN` and `UNION ALL`. Get the shape right first, and the syntax follows.

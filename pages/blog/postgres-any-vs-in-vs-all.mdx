@@ -1,0 +1,420 @@
+---
+title: "PostgreSQL ANY vs IN vs ALL: Arrays and Subqueries"
+description: "How PostgreSQL ANY, SOME and ALL work with arrays and subqueries, how = ANY compares to IN, why NULL breaks NOT IN and <> ALL, and which forms use an index."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 10, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# PostgreSQL ANY vs IN vs ALL: Arrays and Subqueries
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 10, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+`ANY`, `SOME` and `ALL` are PostgreSQL's quantified comparison operators. They take an ordinary comparison operator such as `=`, `<>`, `>` or `LIKE` and apply it to every element of an array or every row of a subquery, then collapse the results into a single boolean. Most people meet them through `= ANY`, the form that lets an application pass a whole list of values as one bind parameter instead of building an `IN (...)` list by string concatenation. This article walks through both forms, compares `= ANY` with `IN` and `<> ALL` with `NOT IN`, and covers the parts that bite in production: NULL elements, empty arrays, index usage and the two error messages everyone hits at least once.
+
+## Sample schema
+
+Every query below runs against these two tables. Create them in a scratch database before following along.
+
+```sql
+CREATE TABLE products (
+    id       integer PRIMARY KEY,
+    name     text NOT NULL,
+    category text NOT NULL,
+    price    numeric(8,2),
+    tags     text[] NOT NULL DEFAULT '{}',
+    attrs    jsonb  NOT NULL DEFAULT '{}'
+);
+
+INSERT INTO products (id, name, category, price, tags, attrs) VALUES
+  (1, 'Laptop Stand',        'office',  39.00, ARRAY['desk','ergonomic'], '{"color":"silver"}'),
+  (2, 'USB-C Hub',           'office',  59.00, ARRAY['usb','travel'],     '{"ports":4}'),
+  (3, 'Mechanical Keyboard', 'office', 129.00, ARRAY['desk','usb','rgb'], '{"color":"black"}'),
+  (4, 'Trail Backpack',      'outdoor', 89.00, ARRAY['travel','hiking'],  '{"liters":30}'),
+  (5, 'Water Bottle',        'outdoor', 19.00, ARRAY['hiking'],           '{"color":"black"}'),
+  (6, 'Gift Card',           'misc',     NULL, '{}',                       '{}');
+
+CREATE TABLE orders (
+    id         integer PRIMARY KEY,
+    product_id integer NOT NULL REFERENCES products(id),
+    qty        integer NOT NULL
+);
+
+INSERT INTO orders (id, product_id, qty) VALUES
+  (1, 1, 2),
+  (2, 3, 1),
+  (3, 3, 4),
+  (4, 5, 10);
+```
+
+Product 6 deliberately has a NULL price and an empty `tags` array.
+
+## The two forms of ANY, SOME and ALL
+
+The general syntax is `expression operator ANY (array_or_subquery)`. `SOME` is a standard-SQL synonym for `ANY` and behaves identically. `ALL` uses the same syntax with different semantics.
+
+### Array form
+
+The right-hand side is any expression that evaluates to an array: an `ARRAY[...]` constructor, an array literal such as `'{1,3,5}'`, an array column, or a bind parameter.
+
+```sql
+SELECT id, name
+FROM products
+WHERE id = ANY (ARRAY[1, 3, 5]);
+```
+
+```text
+ id |        name
+----+---------------------
+  1 | Laptop Stand
+  3 | Mechanical Keyboard
+  5 | Water Bottle
+```
+
+For `ANY`, the left value is compared to each element and the result is true if at least one comparison is true. `id = SOME (ARRAY[1, 3, 5])` returns exactly the same rows.
+
+### Subquery form
+
+The right-hand side is a parenthesized subquery that returns exactly one column. Each row's value is compared to the left expression.
+
+```sql
+SELECT id, name
+FROM products
+WHERE id = ANY (SELECT product_id FROM orders);
+```
+
+```text
+ id |        name
+----+---------------------
+  1 | Laptop Stand
+  3 | Mechanical Keyboard
+  5 | Water Bottle
+```
+
+ turns this into a semi join, which you can confirm with `EXPLAIN`:
+
+```sql
+EXPLAIN (COSTS OFF)
+SELECT id, name FROM products
+WHERE id = ANY (SELECT product_id FROM orders);
+```
+
+```text
+ Hash Semi Join
+   Hash Cond: (products.id = orders.product_id)
+   ->  Seq Scan on products
+   ->  Hash
+         ->  Seq Scan on orders
+```
+
+To use an aggregated array from a subquery, wrap it in extra parentheses so it becomes a scalar: `id = ANY ((SELECT array_agg(product_id) FROM orders))`.
+
+## ANY versus IN
+
+For the `=` operator, `x = ANY (ARRAY[a, b, c])` and `x IN (a, b, c)` are semantically identical, including their NULL behavior. PostgreSQL does not even keep them separate internally: the parser rewrites an `IN` list of constants into a `= ANY` over an array. Look at the plan for a plain `IN`:
+
+```sql
+EXPLAIN (COSTS OFF)
+SELECT id, name FROM products WHERE id IN (1, 3, 5);
+```
+
+```text
+ Seq Scan on products
+   Filter: (id = ANY ('{1,3,5}'::integer[]))
+```
+
+The `IN` you wrote never reaches the executor. So the choice between them is not about performance. It is about how the value list gets into the query.
+
+An `IN` list needs one placeholder per value, so the SQL string changes with the list length, which defeats prepared-statement caching and tempts people into string interpolation. `= ANY ($1)` takes a single array parameter, the SQL text stays constant, and the driver encodes the list. That is the real reason to prefer `= ANY` in application code.
+
+### Python with psycopg
+
+psycopg (both 2 and 3) adapts a Python `list` to a PostgreSQL array automatically:
+
+```python
+import psycopg
+
+ids = [1, 3, 5]
+with psycopg.connect("dbname=shop") as conn:
+    rows = conn.execute(
+        "SELECT id, name FROM products WHERE id = ANY(%s)",
+        (ids,),
+    ).fetchall()
+```
+
+Pass the list itself as one parameter, not its elements.
+
+### Node with pg
+
+`node-postgres` also serializes JavaScript arrays as PostgreSQL arrays. Adding an explicit cast on the placeholder is good practice because it tells the server the element type up front:
+
+```javascript
+const { rows } = await client.query(
+  'SELECT id, name FROM products WHERE id = ANY($1::int[])',
+  [[1, 3, 5]]
+);
+```
+
+With JDBC, pass `conn.createArrayOf("integer", ...)` through `setArray`; in Prisma `$queryRaw`, a JavaScript array inside the template becomes a PostgreSQL array, so `= ANY(${ids})` works directly.
+
+## ANY with other operators
+
+`ANY` is not tied to `=`. Any binary operator that returns boolean works, and this is where it does things `IN` cannot.
+
+### Greater than ANY
+
+`price > ANY (ARRAY[50, 100])` is true when the price exceeds at least one element, which for `>` means exceeding the minimum:
+
+```sql
+SELECT id, name, price
+FROM products
+WHERE price > ANY (ARRAY[50, 100]);
+```
+
+```text
+ id |        name         | price
+----+---------------------+--------
+  2 | USB-C Hub           |  59.00
+  3 | Mechanical Keyboard | 129.00
+  4 | Trail Backpack      |  89.00
+```
+
+The Gift Card with its NULL price is excluded because `NULL > 50` is NULL, not true.
+
+### Not equal ANY, a common trap
+
+`<> ANY` is almost never what you want. It is true whenever the value differs from at least one element, and with two or more distinct elements that is true for every non-NULL value:
+
+```sql
+SELECT count(*) FROM products WHERE id <> ANY (ARRAY[1, 3]);
+```
+
+```text
+ count
+-------
+     6
+```
+
+Product 1 matches because `1 <> 3` is true. To exclude a list of values you need `<> ALL`, covered below.
+
+### LIKE ANY and ILIKE ANY for multiple patterns
+
+Matching a column against several patterns normally means a chain of `OR`s. `LIKE ANY` collapses them:
+
+```sql
+SELECT id, name
+FROM products
+WHERE name ILIKE ANY (ARRAY['%stand', 'usb%', '%bottle']);
+```
+
+```text
+ id |     name
+----+--------------
+  1 | Laptop Stand
+  2 | USB-C Hub
+  5 | Water Bottle
+```
+
+`ILIKE ANY` is case-insensitive, `LIKE ANY` is not, and the regex operators `~` and `~*` work the same way.
+
+### Containment with @> ANY
+
+Containment operators work too, as long as the array element type matches the left side. For the `jsonb` column: `attrs @> ANY (ARRAY['{"color":"black"}'::jsonb, '{"ports":4}'::jsonb])` returns products 2, 3 and 5, the rows whose `attrs` contain at least one of the fragments.
+
+## ALL semantics
+
+`ALL` flips the quantifier: the result is true only if the comparison is true for every element (or every subquery row). It is false if any comparison is false, and NULL otherwise.
+
+### Greater than ALL
+
+```sql
+SELECT id, name, price
+FROM products
+WHERE price > ALL (ARRAY[50, 100]);
+```
+
+```text
+ id |        name         | price
+----+---------------------+--------
+  3 | Mechanical Keyboard | 129.00
+```
+
+`> ALL` means greater than the maximum element; the subquery form `price > ALL (SELECT price FROM products WHERE category = 'outdoor')` returns the same row.
+
+### Not equal ALL as a NOT IN replacement
+
+`x <> ALL (array)` is true when `x` differs from every element, which is exactly the meaning of `NOT IN`. In fact the SQL definition of `x NOT IN (list)` is `x <> ALL (list)`, and PostgreSQL rewrites it that way:
+
+```sql
+SELECT id, name
+FROM products
+WHERE id <> ALL (ARRAY[1, 3]);
+```
+
+```text
+ id |      name
+----+----------------
+  2 | USB-C Hub
+  4 | Trail Backpack
+  5 | Water Bottle
+  6 | Gift Card
+```
+
+`<> ALL ($1)` with an array parameter expresses "exclude this list" without generating placeholders.
+
+## How NULL affects ANY, ALL and IN
+
+Because `ANY` and `ALL` are built from three-valued comparisons, a NULL element or a NULL left-hand value produces NULL in some positions, and NULL in a `WHERE` clause behaves like false.
+
+For `= ANY`, a NULL element is harmless when another element matches, but it turns a "no match" into NULL rather than false:
+
+```sql
+SELECT 1 = ANY (ARRAY[1, NULL]) AS one, 2 = ANY (ARRAY[1, NULL]) AS two;
+```
+
+```text
+ one | two
+-----+-----
+ t   |
+```
+
+In a `WHERE` clause that distinction does not matter, but it matters for `ALL`.
+
+`NOT IN` with a NULL in the list returns no rows at all, and `<> ALL` behaves exactly the same way, because they are the same operation:
+
+```sql
+SELECT count(*) AS not_in    FROM products WHERE id NOT IN (1, NULL);
+SELECT count(*) AS ne_all    FROM products WHERE id <> ALL (ARRAY[1, NULL]);
+```
+
+```text
+ not_in
+--------
+      0
+
+ ne_all
+--------
+      0
+```
+
+For product 2 the comparisons are `2 <> 1` (true) and `2 <> NULL` (NULL). `ALL` needs every comparison to be true, so the result is NULL and the row is dropped. This is the classic `NOT IN (SELECT ...)` bug: if the subquery column can contain NULL, you silently get an empty result. Switching to `<> ALL` does not fix it. The fixes are to filter NULLs out of the list (`WHERE product_id IS NOT NULL` in the subquery, or `array_remove(arr, NULL)` for arrays) or to rewrite as `NOT EXISTS (SELECT 1 FROM orders o WHERE o.product_id = p.id)`, which is not affected by NULLs and usually plans better for large subqueries.
+
+A NULL on the left side always yields NULL, so a row with a NULL column value never passes `= ANY` or `<> ALL`.
+
+## Empty arrays
+
+Empty arrays are where `ANY` and `ALL` are more convenient than their `IN` counterparts. `IN ()` with nothing inside is a syntax error, which forces application code to special-case empty lists. The array forms have well-defined results:
+
+```sql
+SELECT 1 = ANY ('{}'::integer[]) AS any_empty,
+       1 <> ALL ('{}'::integer[]) AS all_empty;
+```
+
+```text
+ any_empty | all_empty
+-----------+-----------
+ f         | t
+```
+
+`= ANY` of an empty array is false because no element makes the comparison true; `<> ALL` of an empty array is true because no element makes it false. So `WHERE id = ANY ($1)` with an empty list returns nothing and `WHERE id <> ALL ($1)` returns everything, which is what callers expect. The subquery forms follow the same rule for zero rows.
+
+Keep the `$1::int[]` cast in Node for empty lists, since an empty JavaScript array carries no element type and the server may fail to infer one.
+
+## Performance and index usage
+
+`= ANY (array)` is index-friendly. With a btree index on the column, the planner produces an index scan whose condition is the whole array, and the executor probes the index once per element. Create a bigger table to see it, since a six-row table will always be scanned sequentially:
+
+```sql
+CREATE TABLE events AS
+SELECT g AS id, (g % 100) AS shard
+FROM generate_series(1, 200000) AS g;
+
+ALTER TABLE events ADD PRIMARY KEY (id);
+ANALYZE events;
+
+EXPLAIN (COSTS OFF)
+SELECT * FROM events WHERE id = ANY (ARRAY[10, 5000, 150000]);
+```
+
+```text
+ Index Scan using events_pkey on events
+   Index Cond: (id = ANY ('{10,5000,150000}'::integer[]))
+```
+
+The same plan appears for `id IN (10, 5000, 150000)` because of the rewrite discussed earlier.
+
+`<> ALL` is the opposite. There is no index structure that efficiently answers "everything except these values", so `EXPLAIN` for `WHERE id <> ALL (ARRAY[10, 5000])` on the same table shows a `Seq Scan on events` with the predicate as a `Filter`. That is expected and usually fine, because an exclusion predicate typically keeps most rows anyway.
+
+When comparing these variants it helps to see the query, its `EXPLAIN` tree and the result grid together; a SQL client such as [Chat2DB](https://chat2db.ai/download) shows the plan next to the result, so you can check whether a rewrite from `IN` to `= ANY` or from `NOT IN` to `NOT EXISTS` actually changed the access path.
+
+## ANY with array columns and the GIN alternative
+
+The array argument does not have to be a constant. When the array is a column, `ANY` tests whether a scalar is a member of that row's array:
+
+```sql
+SELECT id, name, tags
+FROM products
+WHERE 'desk' = ANY (tags);
+```
+
+```text
+ id |        name         |     tags
+----+---------------------+---------------
+  1 | Laptop Stand        | {desk,ergonomic}
+  3 | Mechanical Keyboard | {desk,usb,rgb}
+```
+
+This is readable, but it cannot use an index: a btree on a `text[]` column indexes whole arrays, not elements. The indexable spelling is the containment operator `@>` with a GIN index:
+
+```sql
+CREATE INDEX products_tags_gin ON products USING gin (tags);
+
+SELECT id, name
+FROM products
+WHERE tags @> ARRAY['desk'];
+```
+
+```text
+ id |        name
+----+---------------------
+  1 | Laptop Stand
+  3 | Mechanical Keyboard
+```
+
+`tags @> ARRAY['desk']` returns the same rows as `'desk' = ANY (tags)`, but the GIN index can answer it with a bitmap index scan. For "contains any of several tags" use the overlap operator `&&`, which is also GIN-indexable.
+
+On the sample table the planner still chooses a sequential scan because six rows fit in one page; with `SET enable_seqscan = off` the plan becomes a `Bitmap Index Scan on products_tags_gin`.
+
+## Common errors and how to fix them
+
+### operator does not exist: integer = text[]
+
+```text
+ERROR:  operator does not exist: integer = text[]
+HINT:  No operator matches the given name and argument types.
+```
+
+This means you compared a scalar column directly to an array, almost always because `ANY` was left out: `WHERE id = $1` with an array parameter, or `WHERE id = '{1,2,3}'`. Add `ANY`: `WHERE id = ANY ($1)`.
+
+A close relative is `operator does not exist: integer = text`, which means the element type does not match the column, as in `id = ANY (ARRAY['1', '2'])` where the literals resolve to `text`. Cast the array: `ARRAY['1', '2']::integer[]`.
+
+### op ANY/ALL (array) requires array on right side
+
+```text
+ERROR:  op ANY/ALL (array) requires array on right side
+```
+
+Here `ANY` is present but the argument is not an array: `id = ANY (5)`, or a bind parameter the driver typed as a scalar. In Node the explicit `$1::int[]` cast fixes it; in psycopg it usually means a single value was passed instead of a list.
+
+## Which form to use
+
+- List membership from application code: `col = ANY ($1)` with an array parameter.
+- List exclusion: `col <> ALL ($1)`, after removing NULLs; against a nullable subquery column, `NOT EXISTS`.
+- Several patterns: `col LIKE ANY (ARRAY[...])`.
+- Element in an array column: `'x' = ANY (col)` for readability, `col @> ARRAY['x']` with a GIN index for speed.
+
+`IN` and `= ANY` produce the same plans, so pick the one that keeps your SQL text constant and your parameters typed: `= ANY`.

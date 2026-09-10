@@ -1,0 +1,329 @@
+---
+title: "Postgres Enum Add Value: ALTER TYPE in Production"
+description: "Learn how to add, rename, reorder, and safely remove Postgres enum values with ALTER TYPE, avoid the unsafe use of new value error, and split migrations."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 10, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# Postgres Enum Add Value: ALTER TYPE in Production
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 10, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+Creating a PostgreSQL enum is easy. Living with it for three years is where the trouble starts: a new order status appears, a label gets renamed, an old value has to go, and each of those changes runs into a different rule of `ALTER TYPE`. This article covers that second phase: `ADD VALUE` and its transaction restriction, how migration tools should split the work, `RENAME VALUE`, the recipe for removing or reordering values (there is no `DROP VALUE`), the catalog queries that show what a type contains, and when a `CHECK` constraint or a lookup table is the better tool. Every example runs as written on PostgreSQL 12 or later.
+
+## Quick recap: creating and using an enum
+
+```sql
+CREATE TYPE order_status AS ENUM ('pending', 'paid', 'shipped', 'cancelled');
+
+CREATE TABLE orders (
+  id      bigserial PRIMARY KEY,
+  status  order_status NOT NULL DEFAULT 'pending',
+  amount  numeric(10,2) NOT NULL
+);
+
+INSERT INTO orders (status, amount) VALUES
+  ('pending', 19.90),
+  ('paid', 250.00),
+  ('shipped', 42.50),
+  ('cancelled', 8.00);
+
+SELECT status, count(*) FROM orders GROUP BY status ORDER BY status;
+```
+
+```text
+  status   | count
+-----------+-------
+ pending   |     1
+ paid      |     1
+ shipped   |     1
+ cancelled |     1
+```
+
+Note the `ORDER BY status` result: rows come back in declaration order, not alphabetical order. That distinction matters for everything that follows.
+
+## Adding a value with ALTER TYPE ... ADD VALUE
+
+The basic form appends the new label at the end of the ordering:
+
+```sql
+ALTER TYPE order_status ADD VALUE 'refunded';
+```
+
+You can place the value relative to an existing one, and you can make the statement idempotent:
+
+```sql
+ALTER TYPE order_status ADD VALUE IF NOT EXISTS 'processing' AFTER 'paid';
+ALTER TYPE order_status ADD VALUE IF NOT EXISTS 'draft' BEFORE 'pending';
+```
+
+Running the `IF NOT EXISTS` form a second time is harmless:
+
+```text
+NOTICE:  enum label "processing" already exists, skipping
+ALTER TYPE
+```
+
+Without `IF NOT EXISTS` you get an error instead:
+
+```text
+ERROR:  enum label "processing" already exists
+```
+
+`ADD VALUE` is cheap: it writes one row to `pg_enum` and never touches the table, so it is safe on large tables.
+
+## The transaction rule and why it exists
+
+Enum values are stored as OIDs in the row. If a transaction adds a label, writes it into rows, and then aborts, those rows would reference an OID that no longer exists. PostgreSQL prevents that in two different ways depending on version.
+
+Before PostgreSQL 12, `ADD VALUE` refused to run inside a transaction block at all:
+
+```text
+ERROR:  ALTER TYPE ... ADD cannot run inside a transaction block
+```
+
+Since PostgreSQL 12, the statement is allowed inside a transaction, but the new value cannot be used until the transaction that added it has committed:
+
+```sql
+BEGIN;
+ALTER TYPE order_status ADD VALUE 'on_hold';
+INSERT INTO orders (status, amount) VALUES ('on_hold', 10.00);
+```
+
+```text
+ERROR:  unsafe use of new value "on_hold"
+HINT:  New enum values must be committed before they can be used.
+```
+
+Roll that back, commit the `ALTER TYPE` on its own, and the insert then works:
+
+```sql
+ROLLBACK;
+ALTER TYPE order_status ADD VALUE 'on_hold';
+INSERT INTO orders (status, amount) VALUES ('on_hold', 10.00);
+```
+
+The restriction is on using the value, not on adding it. You can add several values in one transaction and run unrelated DDL alongside them. What you cannot do in that same transaction is insert the value, update to it, use it as a column default, or compare against it in a `WHERE` clause. The one exception: if the enum type itself was created in the same transaction, all of its values are usable immediately.
+
+### What this means for migration tools
+
+Most migration frameworks wrap each migration file in a single transaction, which is exactly the shape that breaks: a migration that adds `'on_hold'` and then backfills rows to it fails with the error above. The fix is to split the work into two migrations, one that only runs `ALTER TYPE ... ADD VALUE` and a later one that uses the value. On PostgreSQL 11 or earlier the first migration also has to run outside a transaction:
+
+| Tool | How to run ADD VALUE outside a transaction | Recommended split |
+|------|---------------------------------------------|-------------------|
+| Flyway | `-- flyway:executeInTransaction false` at the top of the SQL file | `V12__add_status_on_hold.sql`, then `V13__backfill_on_hold.sql` |
+| Liquibase | `runInTransaction="false"` on the changeSet | One changeSet for `ADD VALUE`, usage in the next |
+| Prisma | Each migration file runs in a transaction; give `ALTER TYPE` its own file | Enum migration, `migrate deploy`, then the data migration |
+| Django | `atomic = False` on the `Migration` class | Migration A: `RunSQL` for `ADD VALUE`; migration B: data migration |
+| Alembic | `with op.get_context().autocommit_block(): op.execute(...)` | Two revisions |
+| Rails | `disable_ddl_transaction!` in the migration class | Two migration files (`add_enum_value` exists on Rails 7.2+) |
+
+The split also forces a "schema first, code second" deploy order: the application version that knows about `'on_hold'` can only ship once the value exists everywhere.
+
+## Renaming a value
+
+`RENAME VALUE` has been available since PostgreSQL 10. It changes the label in `pg_enum` and nothing else; rows keep their OIDs and are unaffected:
+
+```sql
+ALTER TYPE order_status RENAME VALUE 'cancelled' TO 'canceled';
+
+SELECT DISTINCT status FROM orders WHERE status = 'canceled';
+```
+
+```text
+  status
+----------
+ canceled
+```
+
+Renaming is transactional and the new label is usable immediately. The thing to watch is everything outside the database: application code, serialized JSON, and reporting queries that spell the old label will start failing with `invalid input value for enum`, so treat a rename as an application change, not only a schema change.
+
+## Why there is no DROP VALUE and how to remove one safely
+
+There is no `ALTER TYPE ... DROP VALUE`. The server would have to scan every table, index, array, and materialized view that could contain the value to prove it is unused, and it does not do that. The supported route is to build a new type and move the column over.
+
+Here is the full recipe, using `orders.status` and removing `'on_hold'`. First make sure nothing uses the value:
+
+```sql
+SELECT count(*) FROM orders WHERE status = 'on_hold';
+```
+
+If the count is not zero, update those rows to another value first. Then:
+
+```sql
+BEGIN;
+
+-- 1. New type without the unwanted value, in the order you want
+CREATE TYPE order_status_new AS ENUM
+  ('draft', 'pending', 'paid', 'processing', 'shipped', 'canceled', 'refunded');
+
+-- 2. Drop the default; it references the old type
+ALTER TABLE orders ALTER COLUMN status DROP DEFAULT;
+
+-- 3. Switch the column, casting through text
+ALTER TABLE orders
+  ALTER COLUMN status TYPE order_status_new
+  USING status::text::order_status_new;
+
+-- 4. Restore the default using the new type
+ALTER TABLE orders ALTER COLUMN status SET DEFAULT 'pending';
+
+-- 5. Drop the old type and take over its name
+DROP TYPE order_status;
+ALTER TYPE order_status_new RENAME TO order_status;
+
+COMMIT;
+```
+
+The `USING status::text::order_status_new` cast does the conversion; there is no direct enum to enum cast. If any row still holds `'on_hold'`, step 3 fails with:
+
+```text
+ERROR:  invalid input value for enum order_status_new: "on_hold"
+```
+
+That failure guarantees you cannot silently drop data.
+
+### Handling dependencies on the old type
+
+Step 5 will refuse to run if other objects still reference the old type:
+
+```text
+ERROR:  cannot drop type order_status because other objects depend on it
+DETAIL:  view open_orders depends on type order_status
+        function set_status(bigint,order_status) depends on type order_status
+```
+
+Find them before you start:
+
+```sql
+SELECT pg_describe_object(classid, objid, objsubid) AS dependent
+FROM pg_depend
+WHERE refobjid = 'order_status'::regtype
+  AND deptype = 'n';
+```
+
+Then handle each category:
+
+- **Other columns using the type**: repeat steps 2 to 4 for every column, in the same transaction.
+- **Views and materialized views**: `DROP VIEW` before step 3 and `CREATE VIEW` again after the rename. Views are bound to the column's type OID, so `ALTER COLUMN TYPE` will also refuse to run while a view selects from the column.
+- **Functions with the type in their signature**: drop and recreate them after the rename. Functions that only mention the type inside a plpgsql body are not tracked by `pg_depend` and keep working, but they fail at runtime if they reference a removed label.
+- **Indexes on the column**: nothing to do. `ALTER COLUMN TYPE` rebuilds them automatically as part of the rewrite.
+- **Composite types and arrays**: a column of type `order_status[]` is handled the same way with `USING status_history::text[]::order_status_new[]`.
+
+`ALTER COLUMN ... TYPE` takes an `ACCESS EXCLUSIVE` lock and rewrites the whole table, so on a large table this is a maintenance window operation. Because the recipe runs in one transaction, any failure leaves you where you started.
+
+## Reordering values
+
+Sort order is frozen when each value is added, apart from the `BEFORE` and `AFTER` placement for new values. To move an existing label, use the new type recipe above with the values listed in the desired order. If the only goal is a different display order, sort by a `CASE` expression in the query and leave the type alone.
+
+## Listing enum values
+
+Three ways, from most convenient to most detailed:
+
+```sql
+-- All values, in sort order, as an array
+SELECT enum_range(NULL::order_status);
+
+-- Full catalog view with the numeric sort key
+SELECT e.enumlabel, e.enumsortorder
+FROM pg_enum e
+JOIN pg_type t ON t.oid = e.enumtypid
+WHERE t.typname = 'order_status'
+ORDER BY e.enumsortorder;
+```
+
+```text
+ enumlabel  | enumsortorder
+------------+---------------
+ draft      |             1
+ pending    |             2
+ paid       |             3
+ processing |             4
+ shipped    |             5
+ canceled   |             6
+ refunded   |             7
+```
+
+In `psql`, `\dT+ order_status` prints the same list in the `Elements` column. A GUI such as [Chat2DB](https://chat2db.ai/download) shows the labels in the type definition panel, which helps when comparing staging with production before a migration.
+
+`enumsortorder` is a `real`, not an integer. Inserting with `BEFORE` or `AFTER` picks a fractional value between the neighbours, and if there is no room PostgreSQL renumbers the whole type, so never persist `enumsortorder` outside the database.
+
+## Casting text to an enum
+
+Application code sends strings; the column stores an enum. An untyped literal is cast implicitly, a `text` value or parameter needs an explicit cast, and both fail loudly on an unknown label:
+
+```sql
+SELECT 'paid'::order_status;              -- works
+SELECT 'PAID'::order_status;              -- fails: labels are case-sensitive
+```
+
+```text
+ERROR:  invalid input value for enum order_status: "PAID"
+LINE 1: SELECT 'PAID'::order_status;
+               ^
+```
+
+For a tolerant check, test membership with `'PAID' = ANY (enum_range(NULL::order_status)::text[])`, which returns `false` instead of raising.
+
+Comparing an enum column to a `text` column also needs a cast on one side, otherwise you get `operator does not exist: order_status = text`.
+
+## Sort order and comparison semantics
+
+Enum values compare by `enumsortorder`, never by label. That gives you a cheap way to express "everything at or after shipped":
+
+```sql
+SELECT id, status FROM orders WHERE status >= 'shipped' ORDER BY status;
+```
+
+```text
+ id |  status
+----+----------
+  3 | shipped
+  4 | canceled
+```
+
+This is handy for state machines, but it also means `MIN(status)` and `MAX(status)` return the first and last labels in declaration order, and a value appended without placement always sorts last. If ordering matters, document that `BEFORE`/`AFTER` must be used for every later addition. Two different enum types cannot be compared directly; cast through text.
+
+## Enum vs CHECK constraint vs lookup table
+
+Each option encodes "this column can only hold these values" with different trade-offs.
+
+| Aspect | Enum type | text + CHECK constraint | Lookup table + foreign key |
+|--------|-----------|-------------------------|----------------------------|
+| Storage per row | 4 bytes (OID) | String length plus 1 to 4 bytes header | 2 to 8 bytes for the key |
+| Adding a value | `ADD VALUE`, no rewrite, separate transaction | Drop and re-add the constraint, validation scan unless `NOT VALID` | Plain `INSERT` |
+| Removing a value | New type plus column rewrite | Replace the constraint | `DELETE`, blocked by FK if in use |
+| Renaming | `RENAME VALUE`, instant | Data `UPDATE` plus new constraint | `UPDATE` one row |
+| Custom sort order | Built in | Needs `CASE` or extra column | Sort column in the table |
+| Metadata (labels, colors, translations) | Not possible | Not possible | Natural |
+| Query performance | Integer-like comparisons, small indexes | String comparison, larger indexes | Extra join for display |
+| Reusable across tables | Yes, one type | Constraint duplicated per table | Yes |
+| ORM support | Prisma, Django, Rails, SQLAlchemy map enums; migrations need care | Universal | Universal, extra model |
+| Values change at runtime | No | No | Yes |
+
+A workable rule: use an enum when the set is small, stable, and its order is meaningful. Use a `CHECK` constraint when you want the same guarantee without special-case migration handling and string storage is acceptable. Use a lookup table when the business can add values without a deployment, or when each value carries attributes of its own.
+
+## pg_dump and logical replication
+
+`pg_dump` emits a single `CREATE TYPE ... AS ENUM (...)` with the labels in `enumsortorder` order, so a restored type keeps the source ordering even if values were inserted with `BEFORE` and `AFTER` over the years. `pg_upgrade` preserves enum OIDs so on-disk rows stay valid.
+
+Logical replication replicates data, not DDL. Enum values travel as text labels, so the subscriber must already have the label when a row referencing a new value arrives. The safe order is: `ADD VALUE` on every subscriber first, then on the publisher, then let the application use the value. If you forget, the apply worker stops with `invalid input value for enum` and replication stalls until the label exists on the subscriber. Physical streaming replication has no such issue because catalog changes ship with the WAL.
+
+## Migration checklist
+
+Use this before every enum change in production:
+
+1. **Adding a value**: put `ALTER TYPE ... ADD VALUE IF NOT EXISTS` in its own migration; on PostgreSQL 11 or earlier mark that migration as non-transactional in your tool. Use `BEFORE`/`AFTER` if sort order matters.
+2. **Using a new value**: only in a later migration or a later application release, never in the same transaction as the `ADD VALUE`.
+3. **Replicas first**: with logical replication, add the value on subscribers before the publisher.
+4. **Renaming**: run `RENAME VALUE`, then grep application code, fixtures, and serialized data for the old label; deploy the code change together with the migration.
+5. **Removing or reordering**: confirm zero rows use the value, list dependents with `pg_depend`, drop views and defaults, `ALTER COLUMN ... TYPE new USING col::text::new`, restore defaults, recreate views and functions, drop the old type, rename the new one. One transaction, maintenance window, because the table is rewritten under an exclusive lock.
+6. **Verify**: `SELECT enum_range(NULL::type)` on every environment, and compare against what the application expects.
+7. **Reconsider the model**: if values change often or need attributes, a lookup table costs less than repeating step 5.
+
+PostgreSQL makes the common change, adding a label, cheap and safe. The rest is manageable as long as you respect the commit boundary and treat removal as a table rewrite.

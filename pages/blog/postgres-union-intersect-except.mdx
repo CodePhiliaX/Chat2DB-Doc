@@ -1,0 +1,520 @@
+---
+title: "PostgreSQL UNION, INTERSECT and EXCEPT Explained"
+description: "How PostgreSQL UNION, UNION ALL, INTERSECT and EXCEPT combine query results, with precedence, NULL handling, ORDER BY rules, EXPLAIN plans and common errors."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 10, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# PostgreSQL UNION, INTERSECT and EXCEPT Explained
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 10, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+Joins combine tables sideways: they add columns. Set operations combine queries vertically: they add, keep or remove whole rows. PostgreSQL implements all three operators from the SQL standard, `UNION`, `INTERSECT` and `EXCEPT`, each in a duplicate-removing form and an `ALL` form that keeps duplicates. They look trivial, and the basic case is, but precedence, type resolution, NULL comparison and `ORDER BY` placement all have rules that are easy to get wrong. This article walks through every set operation with a single runnable dataset, compares `EXCEPT` with `NOT EXISTS` and `INTERSECT` with `INNER JOIN`, and finishes with the diff pattern, recursive CTEs and the error messages you will eventually hit.
+
+## Sample data
+
+Two signup tables from different channels. The duplicates and the `NULL` country are deliberate; they are what make the `ALL` variants and NULL handling visible.
+
+```sql
+CREATE TABLE web_signups (
+  id      serial PRIMARY KEY,
+  email   text NOT NULL,
+  country text
+);
+
+CREATE TABLE mobile_signups (
+  id      serial PRIMARY KEY,
+  email   text NOT NULL,
+  country text
+);
+
+INSERT INTO web_signups (email, country) VALUES
+  ('ana@example.com',  'PT'),
+  ('ana@example.com',  'PT'),   -- signed up three times on web
+  ('ana@example.com',  'PT'),
+  ('ben@example.com',  'US'),
+  ('chen@example.com', NULL),
+  ('dara@example.com', 'IE');
+
+INSERT INTO mobile_signups (email, country) VALUES
+  ('ana@example.com',  'PT'),
+  ('ana@example.com',  'PT'),
+  ('chen@example.com', NULL),
+  ('chen@example.com', NULL),
+  ('eli@example.com',  'US'),
+  ('ben@example.com',  'CA');   -- same person, different country
+```
+
+Every set operation below compares rows on `(email, country)`, so `id` is left out of the `SELECT` lists on purpose. Including it would make every row unique and defeat the exercise.
+
+## UNION and UNION ALL
+
+`UNION` appends the second result to the first and removes duplicate rows. `UNION ALL` appends and keeps everything.
+
+```sql
+SELECT email, country FROM web_signups
+UNION
+SELECT email, country FROM mobile_signups
+ORDER BY email, country;
+```
+
+```text
+      email       | country
+------------------+---------
+ ana@example.com  | PT
+ ben@example.com  | CA
+ ben@example.com  | US
+ chen@example.com |
+ dara@example.com | IE
+ eli@example.com  | US
+(6 rows)
+```
+
+Note that `chen@example.com` appears once even though it exists in both tables with a `NULL` country. In ordinary `WHERE` and `JOIN` comparisons `NULL = NULL` is unknown, but set operations, like `DISTINCT` and `GROUP BY`, treat two NULLs as the same value. That is the single most useful thing to remember about `UNION`, `INTERSECT` and `EXCEPT`: they use "is not distinct from" semantics on every column.
+
+The `ALL` form skips the deduplication step entirely:
+
+```sql
+SELECT count(*) FROM (
+  SELECT email, country FROM web_signups
+  UNION ALL
+  SELECT email, country FROM mobile_signups
+) AS all_rows;
+```
+
+```text
+ count
+-------
+    12
+(1 row)
+```
+
+Six plus six. The practical rule for `UNION` vs `UNION ALL`: use `UNION ALL` unless you specifically need duplicates removed. `UNION` has to sort or hash the combined result to find duplicates, which costs memory and time and can change the plan shape; `UNION ALL` is a plain `Append` node that streams rows through. When the branches cannot overlap anyway (say, an `orders_2025` and an `orders_2026` partition), `UNION` does pointless work.
+
+## INTERSECT and INTERSECT ALL
+
+`INTERSECT` returns rows that appear in both inputs, deduplicated:
+
+```sql
+SELECT email, country FROM web_signups
+INTERSECT
+SELECT email, country FROM mobile_signups
+ORDER BY email;
+```
+
+```text
+      email       | country
+------------------+---------
+ ana@example.com  | PT
+ chen@example.com |
+(2 rows)
+```
+
+`ben@example.com` is not in the intersection because the country differs (`US` vs `CA`); rows are compared on all columns. `chen@example.com` is included because the two NULLs compare as equal.
+
+`INTERSECT ALL` keeps duplicates using the minimum count on either side. `ana@example.com` appears three times on the left and twice on the right, so it appears twice in the result:
+
+```sql
+SELECT email, country FROM web_signups
+INTERSECT ALL
+SELECT email, country FROM mobile_signups
+ORDER BY email;
+```
+
+```text
+      email       | country
+------------------+---------
+ ana@example.com  | PT
+ ana@example.com  | PT
+ chen@example.com |
+(3 rows)
+```
+
+`chen@example.com` shows up once: one copy on the left, two on the right, minimum is one.
+
+## EXCEPT and EXCEPT ALL
+
+`EXCEPT` returns rows from the first query that do not appear in the second. It is order-sensitive: `A EXCEPT B` and `B EXCEPT A` are different questions.
+
+```sql
+SELECT email, country FROM web_signups
+EXCEPT
+SELECT email, country FROM mobile_signups
+ORDER BY email;
+```
+
+```text
+      email       | country
+------------------+---------
+ ben@example.com  | US
+ dara@example.com | IE
+(2 rows)
+```
+
+`EXCEPT ALL` subtracts counts instead of removing any row that has a match. The three web copies of `ana@example.com` minus the two mobile copies leave one:
+
+```sql
+SELECT email, country FROM web_signups
+EXCEPT ALL
+SELECT email, country FROM mobile_signups
+ORDER BY email;
+```
+
+```text
+      email       | country
+------------------+---------
+ ana@example.com  | PT
+ ben@example.com  | US
+ dara@example.com | IE
+(3 rows)
+```
+
+This is why `EXCEPT ALL` is the right tool when you are checking that two tables have exactly the same contents, including duplicate counts. Plain `EXCEPT` would report the two tables as identical as long as every distinct row exists on both sides.
+
+## Precedence and parentheses
+
+PostgreSQL follows the SQL standard here: `INTERSECT` binds more tightly than `UNION` and `EXCEPT`, and operators of equal precedence are evaluated left to right. Consider:
+
+```sql
+SELECT 1 AS n
+UNION
+SELECT 2
+INTERSECT
+SELECT 2;
+```
+
+```text
+ n
+---
+ 1
+ 2
+(2 rows)
+```
+
+That is parsed as `1 UNION (2 INTERSECT 2)`, which is `{1} UNION {2}`. If you meant "union first, then intersect", you have to say so:
+
+```sql
+(SELECT 1 AS n UNION SELECT 2)
+INTERSECT
+SELECT 2;
+```
+
+```text
+ n
+---
+ 2
+(1 row)
+```
+
+Similarly `A EXCEPT B UNION C` is `(A EXCEPT B) UNION C`, not `A EXCEPT (B UNION C)`. The safe habit is simple: as soon as a statement has more than one set operator, parenthesize every grouping explicitly. It costs nothing and the next reader does not have to know the precedence table.
+
+## Type resolution for combined columns
+
+Each branch must produce the same number of columns, and the columns are matched by position, not by name. The output column names are taken from the first branch. PostgreSQL then resolves a common type for each position using its `UNION`/`CASE` type resolution rules:
+
+- If all branches have the same type, that type is used.
+- Unknown-typed literals (bare string constants) are coerced to the type of the other branches.
+- Otherwise PostgreSQL looks for a type in the same category that every input can be implicitly cast to, preferring a "preferred type" of the category (for example `numeric` for numbers, `text` for strings).
+
+```sql
+SELECT 1 AS value
+UNION ALL
+SELECT 2.5;
+```
+
+```text
+ value
+-------
+     1
+   2.5
+(2 rows)
+```
+
+`integer` and `numeric` are both numeric, `integer` casts implicitly to `numeric`, so the column becomes `numeric`. Mixing categories fails:
+
+```sql
+SELECT 1 AS value
+UNION ALL
+SELECT 'two';
+-- ERROR:  invalid input syntax for type integer: "two"
+```
+
+Here `'two'` is an untyped literal, so it is coerced to `integer` and the coercion fails. With an explicitly typed text column the error changes:
+
+```sql
+SELECT 1 AS value
+UNION ALL
+SELECT 'two'::text;
+-- ERROR:  UNION types integer and text cannot be matched
+```
+
+The fix is to cast the branches to what you actually want, usually in every branch rather than just the first, so the intent is obvious:
+
+```sql
+SELECT 1::text AS value
+UNION ALL
+SELECT 'two'::text;
+```
+
+## ORDER BY, LIMIT and OFFSET
+
+Without parentheses, an `ORDER BY`, `LIMIT` or `OFFSET` at the end of a set-operation statement applies to the combined result, not to the last branch:
+
+```sql
+SELECT email, country FROM web_signups
+UNION
+SELECT email, country FROM mobile_signups
+ORDER BY email DESC
+LIMIT 2;
+```
+
+```text
+      email       | country
+------------------+---------
+ eli@example.com  | US
+ dara@example.com | IE
+(2 rows)
+```
+
+Two restrictions apply to that trailing `ORDER BY`. It can only reference output column names or positions, not expressions or table-qualified names, because at that point the tables of the individual branches are no longer in scope. `ORDER BY lower(email)` or `ORDER BY web_signups.email` raises `invalid UNION/INTERSECT/EXCEPT ORDER BY clause`. If you need to sort by an expression, add it as a column in each branch or wrap the whole thing in a subquery.
+
+To apply `ORDER BY` or `LIMIT` to an individual branch, wrap that branch in parentheses:
+
+```sql
+(SELECT email, country FROM web_signups ORDER BY id LIMIT 2)
+UNION ALL
+(SELECT email, country FROM mobile_signups ORDER BY id DESC LIMIT 2);
+```
+
+```text
+      email       | country
+------------------+---------
+ ana@example.com  | PT
+ ana@example.com  | PT
+ ben@example.com  | CA
+ eli@example.com  | US
+(4 rows)
+```
+
+This is a common pattern for "top N from each source". Note that the order of the final output is still not guaranteed unless you add an outer `ORDER BY`; PostgreSQL happens to emit the branches in sequence for `UNION ALL`, but nothing in the SQL standard promises that.
+
+## EXCEPT vs NOT EXISTS
+
+`EXCEPT` and an anti-join answer overlapping but not identical questions. Here is the anti-join version of "web signups not present on mobile":
+
+```sql
+SELECT w.email, w.country
+FROM web_signups w
+WHERE NOT EXISTS (
+  SELECT 1 FROM mobile_signups m
+  WHERE m.email = w.email
+    AND m.country IS NOT DISTINCT FROM w.country
+)
+ORDER BY w.email;
+```
+
+```text
+      email       | country
+------------------+---------
+ ben@example.com  | US
+ dara@example.com | IE
+(2 rows)
+```
+
+Same answer as `EXCEPT`, but only because of two deliberate choices: the `IS NOT DISTINCT FROM` on `country` to make NULLs match, and the fact that neither `ben` nor `dara` is duplicated on the web side. The semantic differences are:
+
+- `EXCEPT` deduplicates its output; `NOT EXISTS` returns every qualifying left row, duplicates included.
+- `EXCEPT` compares on every selected column with NULL-safe equality; `NOT EXISTS` compares on whatever you write, and `=` does not match NULLs.
+- `NOT EXISTS` lets you return columns that are not part of the comparison (the `id`, a `created_at`), which `EXCEPT` cannot do without breaking the comparison.
+
+The planner also treats them differently. Compare the plans (`COSTS OFF` keeps the output stable across machines; exact node names vary a little between PostgreSQL versions):
+
+```sql
+EXPLAIN (COSTS OFF)
+SELECT email, country FROM web_signups
+EXCEPT
+SELECT email, country FROM mobile_signups;
+```
+
+```text
+ HashSetOp Except
+   ->  Append
+         ->  Subquery Scan on "*SELECT* 1"
+               ->  Seq Scan on web_signups
+         ->  Subquery Scan on "*SELECT* 2"
+               ->  Seq Scan on mobile_signups
+```
+
+```sql
+EXPLAIN (COSTS OFF)
+SELECT w.email, w.country
+FROM web_signups w
+WHERE NOT EXISTS (
+  SELECT 1 FROM mobile_signups m
+  WHERE m.email = w.email
+    AND m.country IS NOT DISTINCT FROM w.country
+);
+```
+
+```text
+ Hash Anti Join
+   Hash Cond: (w.email = m.email)
+   Join Filter: (NOT (m.country IS DISTINCT FROM w.country))
+   ->  Seq Scan on web_signups w
+   ->  Hash
+         ->  Seq Scan on mobile_signups m
+```
+
+The `EXCEPT` plan always reads both inputs completely and builds a hash table (or sorts) over the combined stream. The anti-join is a regular join node, which means the planner can pick a hash, merge or nested-loop anti join, can use an index on `mobile_signups(email)` for a nested loop when the left side is small, and can push additional `WHERE` predicates into either side. On small inputs the difference is irrelevant. When one side is large and indexed, or when you only need a filtered slice of the left table, `NOT EXISTS` generally gives the planner more room. `EXCEPT` wins on clarity when you genuinely want a NULL-safe full-row set difference. Running both statements side by side with `EXPLAIN (ANALYZE, BUFFERS)` in a client such as [Chat2DB](https://chat2db.ai/download) is the quickest way to see which one your data favors.
+
+## INTERSECT vs INNER JOIN on all columns
+
+The same comparison applies to `INTERSECT`. An inner join on every column looks equivalent:
+
+```sql
+SELECT w.email, w.country
+FROM web_signups w
+JOIN mobile_signups m
+  ON  m.email = w.email
+  AND m.country IS NOT DISTINCT FROM w.country
+ORDER BY w.email;
+```
+
+```text
+      email       | country
+------------------+---------
+ ana@example.com  | PT
+ ana@example.com  | PT
+ ana@example.com  | PT
+ ana@example.com  | PT
+ ana@example.com  | PT
+ ana@example.com  | PT
+ chen@example.com |
+ chen@example.com |
+(8 rows)
+```
+
+Three `ana` rows times two gives six, one `chen` times two gives two. A join multiplies matches; `INTERSECT` reports each matching row once, and `INTERSECT ALL` reports it `min(left, right)` times, which is neither of the join's behaviors. If you had written `m.country = w.country` instead of `IS NOT DISTINCT FROM`, the `chen` rows would have vanished as well. Use `INTERSECT` when the question is "which rows exist in both", and a join when you need columns from both sides or want the multiplicity.
+
+## Diffing two tables with EXCEPT in both directions
+
+`EXCEPT` only shows one side. To see the full symmetric difference, run it both ways and label each side:
+
+```sql
+SELECT 'web_only' AS side, email, country
+FROM (
+  SELECT email, country FROM web_signups
+  EXCEPT
+  SELECT email, country FROM mobile_signups
+) AS w
+UNION ALL
+SELECT 'mobile_only' AS side, email, country
+FROM (
+  SELECT email, country FROM mobile_signups
+  EXCEPT
+  SELECT email, country FROM web_signups
+) AS m
+ORDER BY side, email;
+```
+
+```text
+    side     |      email       | country
+-------------+------------------+---------
+ mobile_only | ben@example.com  | CA
+ mobile_only | eli@example.com  | US
+ web_only    | ben@example.com  | US
+ web_only    | dara@example.com | IE
+(4 rows)
+```
+
+This is a reliable way to compare a table against its copy after a migration, a replication lag check, or an ETL reload. Some practical notes:
+
+- Use `EXCEPT ALL` if duplicate counts matter. Plain `EXCEPT` treats "two copies" and "three copies" as equal.
+- Select all columns you care about, but exclude ones that legitimately differ (surrogate ids, `updated_at` timestamps), or the diff will report every row.
+- `EXCEPT` compares NULLs as equal, so a NULL on one side and a NULL on the other is not a difference. That is what you want for a diff.
+- On wide tables, the same pattern works with a single `row(t.*)` or `to_jsonb(t)` column if you would rather not list columns, at the cost of readability in the output.
+
+## Set operations in CTEs and recursive CTEs
+
+Set operations work anywhere a query does, including inside a `WITH` clause:
+
+```sql
+WITH all_signups AS (
+  SELECT email, country, 'web' AS channel FROM web_signups
+  UNION ALL
+  SELECT email, country, 'mobile' FROM mobile_signups
+)
+SELECT email, count(DISTINCT channel) AS channels
+FROM all_signups
+GROUP BY email
+HAVING count(DISTINCT channel) = 2
+ORDER BY email;
+```
+
+```text
+      email       | channels
+------------------+----------
+ ana@example.com  |        2
+ ben@example.com  |        2
+ chen@example.com |        2
+(3 rows)
+```
+
+Recursive CTEs are where the `UNION` vs `UNION ALL` choice actually changes behavior rather than just performance. `WITH RECURSIVE` requires the shape `non-recursive term UNION [ALL] recursive term`. With `UNION ALL`, every row produced by the recursive term is fed back in. With `UNION`, rows that have already been produced are discarded before the next iteration, which is what stops recursion on cyclic data.
+
+```sql
+CREATE TABLE referrals (
+  referrer text NOT NULL,
+  referred text NOT NULL
+);
+
+INSERT INTO referrals VALUES
+  ('ana@example.com',  'ben@example.com'),
+  ('ben@example.com',  'chen@example.com'),
+  ('chen@example.com', 'ana@example.com');   -- cycle back to ana
+
+WITH RECURSIVE downstream AS (
+  SELECT referred FROM referrals WHERE referrer = 'ana@example.com'
+  UNION
+  SELECT r.referred
+  FROM referrals r
+  JOIN downstream d ON r.referrer = d.referred
+)
+SELECT referred FROM downstream;
+```
+
+```text
+     referred
+------------------
+ ben@example.com
+ chen@example.com
+ ana@example.com
+(3 rows)
+```
+
+Change `UNION` to `UNION ALL` and the same query never terminates, because `ana` leads to `ben` leads to `chen` leads to `ana` forever. `UNION` terminates because on the fourth iteration the recursive term produces `ben@example.com` again, which is already in the result, so the working table becomes empty.
+
+The trade-off: `UNION` in a recursive CTE deduplicates against everything produced so far, which means the CTE cannot carry a `path` or `depth` column (every row would be unique and nothing would be pruned). For trees, where cycles are impossible, `UNION ALL` is cheaper and lets you accumulate paths. For graphs with possible cycles, use `UNION`, or use `UNION ALL` with the `CYCLE` clause available since PostgreSQL 14, which tracks visited keys explicitly.
+
+## Common errors
+
+**`each UNION query must have the same number of columns`** (or `each EXCEPT query`, `each INTERSECT query`). Branches are matched by position, so `SELECT email FROM web_signups EXCEPT SELECT email, country FROM mobile_signups` is rejected outright. Count the columns in every branch; `SELECT *` on tables with different widths is the usual culprit.
+
+**`UNION types integer and text cannot be matched`**. Position N has incompatible types in two branches. Cast explicitly in each branch. If one branch uses a bare literal, remember it inherits the type from the other branch, so `SELECT id ... UNION SELECT 'n/a'` fails with `invalid input syntax for type integer`.
+
+**`invalid UNION/INTERSECT/EXCEPT ORDER BY clause`**. The trailing `ORDER BY` references an expression or a table-qualified column. Use the output column name (from the first branch) or the column position, or wrap the set operation in a subquery and sort outside.
+
+**`syntax error at or near "UNION"`**. Usually an `ORDER BY` or `LIMIT` on the first branch without parentheses. `SELECT ... ORDER BY x UNION SELECT ...` is not valid; write `(SELECT ... ORDER BY x) UNION SELECT ...`.
+
+**Wrong results after adding a column**. If you add a column to the middle of one branch but not the other, PostgreSQL will not complain as long as the types happen to align, and columns silently shift. Keep branch `SELECT` lists explicit and in the same order; avoid `SELECT *` in set operations.
+
+**Unexpected deduplication**. `UNION`, `INTERSECT` and `EXCEPT` all imply `DISTINCT`. If rows are disappearing, you probably wanted the `ALL` form.
+
+## Summary
+
+`UNION ALL` appends, `UNION` appends and deduplicates, `INTERSECT` keeps rows present in both inputs, and `EXCEPT` keeps rows from the first input that the second lacks; the `ALL` variants work on counts instead of on distinct rows. All of them compare every column, treat NULLs as equal, match columns by position, take output names from the first branch, and evaluate `INTERSECT` before `UNION` and `EXCEPT` unless you add parentheses. Trailing `ORDER BY` and `LIMIT` apply to the whole result, per-branch clauses need parentheses. `EXCEPT` and `INTERSECT` are the clearest way to express set difference and set membership over full rows, while `NOT EXISTS` and joins give the planner more freedom and let you return extra columns. Keep the sample tables around and try each variation; the whole set of examples runs in a few seconds in any SQL client, including [Chat2DB](https://app.chat2db.ai), and the behaviors are much easier to remember once you have seen the row counts change.

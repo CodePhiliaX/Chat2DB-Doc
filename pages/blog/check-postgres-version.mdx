@@ -1,0 +1,351 @@
+---
+title: "How to Check Your PostgreSQL Version: Every Method"
+description: "Every way to check your PostgreSQL version: SELECT version(), SHOW server_version, psql --version, Docker, RDS and other managed services, and app code."
+image: "/blog/image/9908.jpg"
+category: "Technical Article"
+date: September 10, 2026
+---
+[![Click to use](/image/blog/bg/chat2db1.png)](https://app.chat2db.ai/)
+# How to Check Your PostgreSQL Version: Every Method
+
+import Authors, { Author } from "components/authors";
+
+<Authors date="September 10, 2026">
+  <Author name="Chat2DB Team" link="https://chat2db.ai" />
+</Authors>
+
+Knowing which PostgreSQL version you are running is the first question in almost every debugging session, upgrade plan, and "does this feature exist yet" conversation. The answer is not always obvious, because there are two versions in play: the version of the server you are connected to, and the version of the client tools on your machine. This guide covers every practical way to check the Postgres version, from a single SQL statement to the OS package manager, Docker, managed cloud services, and application code, and explains which method answers which question.
+
+## The fastest way: SELECT version()
+
+If you have any connection to the database, run `SELECT version();`. It works on every PostgreSQL release, on every managed service, and from any client.
+
+```sql
+SELECT version();
+```
+
+```text
+                                                       version
+----------------------------------------------------------------------------------------------------------------------
+ PostgreSQL 16.4 on x86_64-pc-linux-gnu, compiled by gcc (GCC) 13.2.0, 64-bit
+(1 row)
+```
+
+The string tells you the major and minor version (16.4), the platform, and the compiler. It always describes the server, never the client, so it is the number that matters when you are asking whether a feature or a bug fix is present.
+
+You can run this from `psql`, from a GUI, or from any driver. In [Chat2DB](https://app.chat2db.ai/) the server version is also shown in the connection details as soon as a connection succeeds, which is convenient when you manage several environments and do not want to open a console on each one.
+
+## SHOW server_version and server_version_num
+
+`SELECT version();` is meant for humans. For scripts and comparisons there are two run-time parameters that return only the number.
+
+```sql
+SHOW server_version;
+```
+
+```text
+ server_version
+----------------
+ 16.4
+(1 row)
+```
+
+```sql
+SHOW server_version_num;
+```
+
+```text
+ server_version_num
+--------------------
+ 160004
+(1 row)
+```
+
+`server_version_num` is an integer, which makes it safe to compare with `<` and `>=`. The encoding is major version times 10000 plus the minor version, so 160004 means 16.4, 150008 means 15.8, and 170000 means 17.0. For releases before version 10 the scheme was major times 10000, plus the second digit times 100, plus the minor: 9.6.24 becomes 90624.
+
+That integer is what you want in migration scripts and conditional DDL:
+
+```sql
+DO $$
+BEGIN
+  IF current_setting('server_version_num')::int < 150000 THEN
+    RAISE EXCEPTION 'PostgreSQL 15 or newer required';
+  END IF;
+END $$;
+```
+
+Both parameters are also available through `current_setting()`, which is useful when you need the value inside an expression rather than as a standalone statement:
+
+```sql
+SELECT current_setting('server_version'),
+       current_setting('server_version_num')::int AS version_num;
+-- 16.4 | 160004
+```
+
+Because these are read-only parameters, they work with the same permissions as any ordinary query. You do not need superuser access.
+
+## The psql banner on connect
+
+When `psql` connects, it prints the server version in the banner. If the client and server major versions differ, it prints both, along with a warning that some backslash commands may not work.
+
+```bash
+psql -h localhost -U postgres -d appdb
+```
+
+```text
+psql (17.2, server 16.4)
+WARNING: psql major version 17, server major version 16.
+         Some psql features might not work.
+```
+
+This banner is the quickest way to spot a client and server mismatch. Inside `psql`, the `\conninfo` command shows the connection parameters but not the version, so use the banner or one of the SQL statements above.
+
+## psql --version: client, not server
+
+A common mistake is running `psql --version` and reporting the result as "the Postgres version". That command never contacts a server; it prints the version of the `psql` binary on your machine and nothing else.
+
+```bash
+psql --version
+```
+
+```text
+psql (PostgreSQL) 17.2
+```
+
+The client and server can differ for ordinary reasons: you installed the latest tools from Homebrew or apt, while the production server is a managed instance on an older major version, or the reverse. A newer `psql` talking to an older server is generally fine for queries, since the wire protocol has been stable for many years. Tools such as `pg_dump` are more sensitive; a `pg_dump` older than the server it dumps will refuse to run, so the version of the client binary matters there too, and the usual advice is to keep client tools at or above the newest server you work with.
+
+If you want to know what the server is running, connect and ask the server.
+
+## Other command-line binaries
+
+The server binary `postgres`, the cluster control utility `pg_ctl`, and the build configuration tool `pg_config` each report their own version. These are useful on the database host itself, where you may have several PostgreSQL installations side by side.
+
+```bash
+postgres --version
+pg_ctl --version
+pg_config --version
+```
+
+```text
+postgres (PostgreSQL) 16.4
+pg_ctl (PostgreSQL) 16.4
+PostgreSQL 16.4
+```
+
+On Debian and Ubuntu the binaries live under `/usr/lib/postgresql/<major>/bin/`, and the packaged `pg_lsclusters` command lists every cluster on the machine with its major version, port, status, and data directory, which is the quickest overview when several majors are installed side by side.
+
+If `postgres --version` says one thing and `SELECT version()` says another, you are looking at two different installations; check the full path of the running `postgres` process with `ps` to see which one the service launched.
+
+## The PG_VERSION file in the data directory
+
+Every data directory contains a plain text file named `PG_VERSION` holding the major version of the cluster that owns the data. It exists so the server can refuse to start against data files written by an incompatible major version. You can read it without the server running, which makes it the right check when a service will not start or you are inspecting a backup.
+
+```bash
+cat /var/lib/postgresql/16/main/PG_VERSION
+```
+
+```text
+16
+```
+
+Only the major version is stored, since minor releases share the same on-disk format. For clusters older than version 10 the file contains the two-part major, such as `9.6`.
+
+## Checking from the operating system
+
+When you cannot or do not want to connect, the package manager tells you what is installed. These commands report installed packages, which normally match the server binary, but remember that an installed package is not proof that the service is running that version.
+
+```bash
+# Debian / Ubuntu
+apt list --installed 2>/dev/null | grep postgresql
+
+# RHEL / Rocky / Fedora
+rpm -qa | grep postgresql
+
+# macOS with Homebrew
+brew list --versions | grep postgresql
+```
+
+```text
+postgresql-16/jammy-pgdg 16.4-1.pgdg22.04+1 amd64 [installed]
+```
+
+`systemctl list-units --type=service | grep postgres` shows which service unit is active. On distributions that support multiple clusters the unit name includes the major version, for example `postgresql@16-main.service`.
+
+To see whether a newer minor release is available from your repository, compare the installed package with the candidate:
+
+```bash
+apt policy postgresql-16
+```
+
+```text
+postgresql-16:
+  Installed: 16.4-1.pgdg22.04+1
+  Candidate: 16.6-1.pgdg22.04+1
+```
+
+An installed version below the candidate means a minor update is waiting. Minor updates only replace binaries and never change the data format, so they are a restart rather than a migration.
+
+## Docker containers
+
+With PostgreSQL in Docker, the image tag is a hint but not an answer. A tag such as `postgres:16` floats to whatever minor was current when you pulled it. Ask the container directly:
+
+```bash
+docker exec -it my-postgres postgres --version
+```
+
+```text
+postgres (PostgreSQL) 16.4 (Debian 16.4-1.pgdg120+1)
+```
+
+Or run SQL through the container's own `psql`, which avoids any client mismatch on your laptop:
+
+```bash
+docker exec -it my-postgres psql -U postgres -c "SHOW server_version;"
+```
+
+For Docker Compose, replace `docker exec` with `docker compose exec db` and the service name you defined.
+
+## Managed cloud services
+
+On managed services you never get shell access to the host, so the SQL methods are your primary tool, and each provider also exposes the engine version through its console or CLI.
+
+### Amazon RDS and Aurora
+
+The console shows the engine version on the instance's Configuration tab. From the CLI:
+
+```bash
+aws rds describe-db-instances \
+  --db-instance-identifier prod-db \
+  --query "DBInstances[0].[Engine,EngineVersion]" \
+  --output text
+```
+
+```text
+postgres	16.4
+```
+
+For Aurora PostgreSQL, `SELECT version();` returns the underlying PostgreSQL version, while `SELECT aurora_version();` returns the Aurora release. To see which newer versions your instance can upgrade to, run `aws rds describe-db-engine-versions` with your current engine version and read the `ValidUpgradeTarget` list; the same list appears in the console when you choose Modify on the instance.
+
+### Google Cloud SQL
+
+```bash
+gcloud sql instances describe prod-db --format="value(databaseVersion)"
+```
+
+```text
+POSTGRES_16
+```
+
+Cloud SQL reports the major version in the instance metadata. Use `SHOW server_version;` on the instance to see the exact minor.
+
+### Azure Database for PostgreSQL
+
+```bash
+az postgres flexible-server show -g my-rg -n prod-db --query version -o tsv
+```
+
+The portal shows the same value under the server overview, and again the minor version comes from `SELECT version();` on the server.
+
+### Supabase and Neon
+
+Both platforms show the Postgres version in the dashboard under the project's database settings, and both hand you a standard connection string, so the fastest path is still `psql "$DATABASE_URL" -c "SELECT version();"`.
+
+## Checking from application code
+
+Applications often need the version at startup to decide which SQL to emit. Every driver can run `SELECT version()`, and most expose the server version through the connection object as well.
+
+### Python with psycopg
+
+```python
+import psycopg
+
+with psycopg.connect("postgresql://app@localhost/appdb") as conn:
+    print(conn.info.server_version)  # 160004
+```
+
+`conn.info.server_version` returns the same integer as `server_version_num`, so the comparison rules above apply directly, and you can still run `SHOW server_version` for the human-readable form.
+
+### Node.js with pg
+
+```javascript
+const { Client } = require("pg");
+
+const client = new Client({ connectionString: process.env.DATABASE_URL });
+await client.connect();
+const { rows } = await client.query("SHOW server_version_num");
+console.log(rows[0].server_version_num); // "160004"
+```
+
+### Java with JDBC
+
+```java
+DatabaseMetaData meta = conn.getMetaData();
+System.out.println(meta.getDatabaseProductVersion()); // 16.4
+System.out.println(meta.getDatabaseMajorVersion());   // 16
+```
+
+`getDatabaseProductVersion()` describes the server; `getDriverVersion()` on the same object describes the client library. Keep the distinction in mind when reporting bugs.
+
+## Extension versions
+
+The server version does not tell you which extensions are installed or how new they are. Inside `psql`, `\dx` lists installed extensions with their versions:
+
+```text
+  Name   | Version |   Schema
+---------+---------+------------
+ pg_trgm | 1.6     | public
+ plpgsql | 1.0     | pg_catalog
+```
+
+The same information is in `pg_extension`, and `pg_available_extensions` shows what is installed on the server versus what could be created, including newer versions waiting to be applied with `ALTER EXTENSION ... UPDATE`:
+
+```sql
+SELECT name, default_version, installed_version
+FROM pg_available_extensions
+WHERE name IN ('pg_trgm', 'vector');
+```
+
+```text
+  name   | default_version | installed_version
+---------+-----------------+-------------------
+ pg_trgm | 1.7             | 1.6
+ vector  | 0.7.4           |
+```
+
+A `default_version` higher than `installed_version`, as with `pg_trgm` above, means the packaged extension was upgraded on disk but this database has not run the update script yet. An empty `installed_version` means the extension is available but nobody has run `CREATE EXTENSION` in this database.
+
+## Comparison of methods
+
+| Method | Needs DB connection | Shows | Managed services |
+|---|---|---|---|
+| `SELECT version();` | Yes | Server, full string | Yes |
+| `SHOW server_version;` | Yes | Server, number | Yes |
+| `SHOW server_version_num;` | Yes | Server, integer | Yes |
+| `psql` banner on connect | Yes | Server and client | Yes |
+| `psql --version` | No | Client only | N/A |
+| `postgres`, `pg_ctl`, `pg_config --version` | No (host shell) | Server binary | No |
+| `PG_VERSION` file | No (file access) | Cluster major | No |
+| `apt`, `rpm`, `brew`, `systemctl` | No (host shell) | Installed packages | No |
+| `docker exec ... postgres --version` | No (Docker access) | Container binary | N/A |
+| Cloud console or CLI | No (cloud credentials) | Engine version | Yes |
+| Driver metadata (psycopg, pg, JDBC) | Yes | Server and driver | Yes |
+
+## Understanding the version numbers
+
+Since PostgreSQL 10, the version has two parts: a major number and a minor number. 16.4 is the fourth minor release of major version 16. A new major version ships roughly once a year and can change the on-disk format, so moving between majors requires `pg_upgrade`, a dump and restore, or logical replication. Minor releases contain bug and security fixes only, are released on a shared schedule for all supported majors, and are always safe and recommended to apply.
+
+Before version 10, the scheme had three parts, and the first two together formed the major version: 9.6 and 9.5 were different majors with different data formats, while 9.6.24 was a minor release of 9.6. This is why `server_version_num` for those releases uses the three-component encoding described earlier.
+
+Each major version is supported for about five years from its initial release, after which it stops receiving minor updates. The exact release and end-of-life dates for every version are published on the official versioning policy page at [postgresql.org/support/versioning](https://www.postgresql.org/support/versioning/), and that page is the source to trust rather than any date quoted in a blog post.
+
+## What to do if your version is end-of-life
+
+If the version you found no longer appears in the supported list, it is not receiving security fixes, and the gap only grows. The practical steps are:
+
+1. Apply the latest minor release of your current major first. This is cheap, requires only a restart, and picks up every fix that was released before support ended.
+2. Read the release notes for each major between your version and the target. Breaking changes are listed per major, and skipping several majors at once is supported by `pg_upgrade` but means reading more notes.
+3. Test the upgrade on a copy of production. Run `pg_upgrade --check` against a restored backup, run your application's test suite against it, and check extension compatibility, since extensions must be available for the new major before you can upgrade.
+4. Choose the upgrade path that fits your downtime budget: `pg_upgrade` with `--link` for a fast in-place upgrade, dump and restore for small databases or when changing platforms, or logical replication for near-zero downtime.
+5. On managed services, use the provider's upgrade feature, which wraps `pg_upgrade` and handles the parameter group or configuration changes for you.
+
+Whichever method you use, record the result somewhere your team can see it. The number returned by `SELECT version();` is the most useful single fact in a bug report, a support ticket, or an upgrade plan, and it takes one query to find out.
